@@ -38,18 +38,40 @@ on a grid with a 1000 px step along x).
   `curl -F chat_id=… -F document=@data/<name>.pdf https://api.telegram.org/bot…/sendDocument`
   with the bot from `~/.config/claude-telegram/env` (the same bot as the `tg-notify` skill).
 
-## Editing the file
+## Editing the board
 
-- Write the whole file (`type`, `version`, `elements`, `appState`, `files`). An open browser tab
-  picks up the change within a second; edits from the tab land in the file about 0.6 s after
-  the last stroke. Re-read the file right before writing so you don't wipe Ilias's edits.
-- New element: copy a similar existing one, give it a new unique `id`, random `seed` and
-  `versionNonce`, set `version: 1`. Changing an existing element: `version + 1`.
+The server holds every board in memory and merges edits element by element by `version`, the same
+rule Excalidraw uses in live collaboration (higher `version` wins; on a tie, the lower
+`versionNonce` wins). Open tabs and agents send only the elements they changed, so simultaneous
+edits from Ilias and from you don't overwrite each other.
+
+Edit through HTTP, not by writing the file. Basic auth with any login and the password from the
+file:
+
+```bash
+AUTH="a:$(cat /root/.config/excalidraw-local/password)"
+curl -s -u "$AUTH" 'localhost:3010/api/scene?file=parallel.excalidraw' > /tmp/scene.json   # read
+curl -s -u "$AUTH" 'localhost:3010/api/edit?file=parallel.excalidraw' -d '{
+  "update": [{"id": "<id>", "x": 120, "text": "новый текст"}],
+  "add": [{"type": "text", "x": 0, "y": 0, "text": "…", "fontSize": 20, "fontFamily": 5, "frameId": "<frame id>", …}],
+  "delete": ["<id>"]
+}'
+```
+
+- `update` is a patch over the current element. The server bumps `version`, and for text it also
+  sets `originalText`. If the text length changes, pass a new `width` yourself (Excalifont is
+  about 0.56·fontSize per character).
+- `add` takes the element's own fields. `id`, `seed`, `version`, `index` and the common defaults
+  are filled in by the server. Copy the shape of a similar existing element.
+- `delete` marks the element `isDeleted` (Excalidraw keeps tombstones so deletions sync).
+- In the scene JSON, skip elements with `isDeleted: true`.
 - A slide's content carries `frameId` = the frame's id; coordinates are absolute on the canvas.
 - Text inside a shape: the text has `containerId`, and the shape has
   `boundElements: [{"type": "text", "id": …}]`.
-- Images: the element is `type: "image"` with a `fileId`; the data sits in
-  `files[fileId] = {id, mimeType, dataURL, created}`.
+- Images: the element is `type: "image"` with a `fileId`; pass the data next to it as
+  `"files": {"<fileId>": {"id", "mimeType", "dataURL", "created"}}`.
+- Writing `data/<name>.excalidraw` directly still works as a last resort: the server rereads it and
+  reloads every tab, but an edit Ilias is making in that second is lost.
 
 ## Ilias's slide style
 

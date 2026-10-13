@@ -1,6 +1,6 @@
 import { createRoot } from "react-dom/client";
 import { useEffect, useRef, useState } from "react";
-import { Excalidraw, MainMenu, serializeAsJSON, restore, exportToSvg } from "@excalidraw/excalidraw";
+import { Excalidraw, MainMenu, restore, exportToSvg, reconcileElements, CaptureUpdateAction } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
 import { Presenter } from "./present.jsx";
 
@@ -13,36 +13,55 @@ const url = `/api/scene?file=${encodeURIComponent(file)}&client=${client}`;
 function App() {
   const [initial, setInitial] = useState(null);
   const api = useRef(null);
-  const lastSaved = useRef("");
+  const synced = useRef(new Map()); // id -> version, которую сервер уже знает
+  const sentFiles = useRef(new Set());
   const timer = useRef(null);
 
+  const remember = (elements, files) => {
+    for (const e of elements) synced.current.set(e.id, e.version);
+    for (const id of Object.keys(files || {})) sentFiles.current.add(id);
+  };
+
   const load = async () => {
-    const text = await (await fetch(url)).text();
-    lastSaved.current = text;
-    return restore(JSON.parse(text), null, null);
+    const scene = await (await fetch(url)).json();
+    synced.current.clear();
+    remember(scene.elements, scene.files);
+    return restore(scene, null, null);
   };
 
   useEffect(() => {
     load().then((d) => setInitial(d));
-    // Файл поменяли снаружи (агент) — подтягиваем без перезагрузки страницы.
     const es = new EventSource(`/api/events?file=${encodeURIComponent(file)}&client=${client}`);
-    es.onmessage = async () => {
-      if (!api.current) return;
-      const d = await load();
-      api.current.addFiles(Object.values(d.files || {}));
-      api.current.updateScene({ elements: d.elements });
+    es.onmessage = async (ev) => {
+      const a = api.current;
+      if (!a) return;
+      const msg = JSON.parse(ev.data);
+      if (msg.type === "reload") {
+        const d = await load();
+        a.addFiles(Object.values(d.files || {}));
+        a.updateScene({ elements: d.elements, captureUpdate: CaptureUpdateAction.NEVER });
+        return;
+      }
+      // Чужие правки (другая вкладка, агент) — сливаем по версиям, свои незаконченные не теряем.
+      remember(msg.elements, msg.files);
+      if (Object.keys(msg.files || {}).length) a.addFiles(Object.values(msg.files));
+      const elements = reconcileElements(a.getSceneElementsIncludingDeleted(), msg.elements, a.getAppState());
+      a.updateScene({ elements, captureUpdate: CaptureUpdateAction.NEVER });
     };
     return () => es.close();
   }, []);
 
-  const onChange = (elements, appState, files) => {
+  // Шлём только элементы, чья версия отличается от известной серверу.
+  const onChange = () => {
     clearTimeout(timer.current);
     timer.current = setTimeout(async () => {
-      const text = serializeAsJSON(elements, appState, files, "local");
-      if (text === lastSaved.current) return;
-      lastSaved.current = text;
-      await fetch(url, { method: "PUT", body: text });
-    }, 600);
+      const a = api.current;
+      const elements = a.getSceneElementsIncludingDeleted().filter((e) => synced.current.get(e.id) !== e.version);
+      const files = Object.fromEntries(Object.entries(a.getFiles()).filter(([id]) => !sentFiles.current.has(id)));
+      if (!elements.length && !Object.keys(files).length) return;
+      remember(elements, files);
+      await fetch(url, { method: "POST", body: JSON.stringify({ elements, files }) });
+    }, 250);
   };
 
   if (!initial) return null;

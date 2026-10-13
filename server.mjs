@@ -1,10 +1,12 @@
-// Локальный Excalidraw: отдаёт сборку, читает/пишет data/*.excalidraw
-// и шлёт в браузер событие, когда файл поменяли снаружи.
+// Локальный Excalidraw: отдаёт сборку и держит сцены data/*.excalidraw в памяти.
+// Вкладки и агенты присылают изменённые элементы, сервер сливает их по версиям
+// (как reconcileElements в Excalidraw), рассылает остальным и пишет на диск.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
+import { generateKeyBetween } from "fractional-indexing";
 
 const root = path.dirname(new URL(import.meta.url).pathname);
 const dataDir = path.join(root, "data");
@@ -17,41 +19,170 @@ const authorized = (req) => {
   const [, b64] = (req.headers.authorization || "").split(" ");
   return Buffer.from(b64 || "", "base64").toString().split(":").slice(1).join(":") === password;
 };
-const ownWrites = new Map(); // file -> {hash, client} последней записи из браузера
 
-const sceneFile = (u) => {
-  const name = path.basename(u.searchParams.get("file") || "parallel.excalidraw");
-  return path.join(dataDir, name);
+const randomInt = () => crypto.randomInt(1, 2 ** 31);
+const randomId = () => crypto.randomBytes(16).toString("base64url").slice(0, 21);
+const byIndex = (a, b) => {
+  const x = a.index ?? "￿", y = b.index ?? "￿";
+  return x < y ? -1 : x > y ? 1 : 0;
+};
+// Правило Excalidraw: побеждает большая version, при равной — меньший versionNonce.
+const newer = (a, b) => !b || a.version > b.version || (a.version === b.version && a.versionNonce < b.versionNonce);
+
+const ELEMENT_DEFAULTS = {
+  angle: 0, strokeColor: "#1e1e1e", backgroundColor: "transparent", fillStyle: "solid",
+  strokeWidth: 2, strokeStyle: "solid", roughness: 1, opacity: 100, groupIds: [], frameId: null,
+  roundness: null, boundElements: null, link: null, locked: false, isDeleted: false,
+};
+
+class Scene {
+  constructor(file) {
+    this.file = file;
+    this.clients = new Set(); // {res, client}
+    this.load();
+    // Файл поправили руками (не через сервер) — перечитываем и перезагружаем вкладки.
+    setInterval(() => {
+      if (!fs.existsSync(file) || hash(fs.readFileSync(file)) === this.diskHash) return;
+      this.load();
+      this.broadcast({ type: "reload" });
+    }, 1000);
+  }
+
+  load() {
+    const text = fs.readFileSync(this.file);
+    const doc = JSON.parse(text);
+    this.doc = doc;
+    this.elements = new Map(doc.elements.map((e) => [e.id, e]));
+    this.files = doc.files || {};
+    this.diskHash = hash(text);
+  }
+
+  toJSON() {
+    const elements = [...this.elements.values()].sort(byIndex);
+    return { ...this.doc, elements, files: this.files };
+  }
+
+  merge(elements = [], files = {}) {
+    const changed = [];
+    for (const e of elements) {
+      if (newer(e, this.elements.get(e.id))) {
+        this.elements.set(e.id, e);
+        changed.push(e);
+      }
+    }
+    const newFiles = {};
+    for (const [id, f] of Object.entries(files)) {
+      if (!this.files[id]) newFiles[id] = this.files[id] = f;
+    }
+    if (changed.length || Object.keys(newFiles).length) this.persist();
+    return { elements: changed, files: newFiles };
+  }
+
+  // Правка агентом: {add: [...], update: [{id, ...patch}], delete: [id]}.
+  edit({ add = [], update = [], delete: del = [] }, files = {}) {
+    const now = Date.now();
+    const bump = (e) => ({ ...e, version: (e.version || 1) + 1, versionNonce: randomInt(), updated: now });
+    const out = [];
+    for (const patch of update) {
+      const cur = this.elements.get(patch.id);
+      if (!cur) throw new Error(`нет элемента ${patch.id}`);
+      const next = bump({ ...cur, ...patch });
+      if (cur.type === "text" && "text" in patch && !("originalText" in patch)) next.originalText = patch.text;
+      out.push(next);
+    }
+    for (const id of del) {
+      const cur = this.elements.get(id);
+      if (cur) out.push(bump({ ...cur, isDeleted: true }));
+    }
+    let last = [...this.elements.values()].map((e) => e.index).filter(Boolean).sort().at(-1) ?? null;
+    for (const a of add) {
+      last = generateKeyBetween(last, null);
+      out.push({
+        ...ELEMENT_DEFAULTS, ...a, id: a.id || randomId(), seed: a.seed || randomInt(),
+        version: 1, versionNonce: randomInt(), updated: now, index: a.index || last,
+      });
+    }
+    return this.merge(out, files);
+  }
+
+  persist() {
+    clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(() => {
+      const text = JSON.stringify(this.toJSON());
+      fs.writeFileSync(this.file + ".tmp", text);
+      fs.renameSync(this.file + ".tmp", this.file);
+      this.diskHash = hash(text);
+    }, 300);
+  }
+
+  broadcast(msg, exceptClient) {
+    const data = `data: ${JSON.stringify(msg)}\n\n`;
+    for (const c of this.clients) if (!exceptClient || c.client !== exceptClient) c.res.write(data);
+  }
+}
+
+const scenes = new Map();
+const sceneFor = (f) => {
+  if (!scenes.has(f)) scenes.set(f, new Scene(f));
+  return scenes.get(f);
+};
+
+const fileParam = (u) => path.join(dataDir, path.basename(u.searchParams.get("file") || "parallel.excalidraw"));
+const isScene = (f) => f.endsWith(".excalidraw");
+
+const readBody = (req) => new Promise((resolve, reject) => {
+  // Склеиваем буферы, а не строки: иначе символ UTF-8 на стыке чанков бьётся в «��».
+  const chunks = [];
+  req.on("data", (c) => chunks.push(c));
+  req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+  req.on("error", reject);
+});
+
+const json = (res, status, body) => {
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify(body));
 };
 
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css",
   ".woff2": "font/woff2", ".json": "application/json", ".svg": "image/svg+xml" };
 
-http.createServer((req, res) => {
+async function handle(req, res) {
   if (!authorized(req)) {
     return res.writeHead(401, { "WWW-Authenticate": 'Basic realm="excalidraw"' }).end();
   }
   const u = new URL(req.url, "http://x");
+  const f = fileParam(u);
+  const client = u.searchParams.get("client");
+
   if (u.pathname === "/api/scene") {
-    const f = sceneFile(u);
-    if (req.method === "PUT") {
-      // Склеиваем буферы, а не строки: иначе символ UTF-8 на стыке чанков бьётся в «��».
-      const chunks = [];
-      req.on("data", (c) => chunks.push(c));
-      req.on("end", () => {
-        const body = Buffer.concat(chunks);
-        ownWrites.set(f, { hash: hash(body), client: u.searchParams.get("client") });
-        fs.writeFileSync(f + ".tmp", body);
-        fs.renameSync(f + ".tmp", f);
-        res.end("ok");
-      });
-      return;
+    if (!fs.existsSync(f)) return json(res, 404, { error: "нет файла" });
+    if (!isScene(f)) {
+      // Колоды (*.deck.json) — обычные файлы.
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      return fs.createReadStream(f).pipe(res);
     }
-    res.setHeader("Content-Type", "application/json");
-    return fs.createReadStream(f).on("error", () => res.writeHead(404).end()).pipe(res);
+    const scene = sceneFor(f);
+    if (req.method === "GET") return json(res, 200, scene.toJSON());
+    // POST/PUT: элементы (целая сцена или только изменённые) — сливаем по версиям.
+    const body = JSON.parse(await readBody(req));
+    const changed = scene.merge(body.elements, body.files);
+    if (changed.elements.length || Object.keys(changed.files).length) scene.broadcast({ type: "elements", ...changed }, client);
+    return json(res, 200, { merged: changed.elements.length });
   }
+
+  if (u.pathname === "/api/edit" && req.method === "POST") {
+    const scene = sceneFor(f);
+    try {
+      const body = JSON.parse(await readBody(req));
+      const changed = scene.edit(body, body.files);
+      scene.broadcast({ type: "elements", ...changed });
+      return json(res, 200, { ids: changed.elements.map((e) => e.id) });
+    } catch (e) {
+      return json(res, 400, { error: String(e.message || e) });
+    }
+  }
+
   if (u.pathname === "/api/pdf") {
-    const f = sceneFile(u);
     const out = f.replace(/\.excalidraw$/, "") + ".pdf";
     execFile("node", [path.join(root, "scripts/pdf.mjs"), path.basename(f), out], { cwd: root, timeout: 300000 }, (err, _o, stderr) => {
       if (err) return res.writeHead(500).end(stderr || String(err));
@@ -61,26 +192,38 @@ http.createServer((req, res) => {
     });
     return;
   }
+
   if (u.pathname === "/api/events") {
-    const f = sceneFile(u);
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+    res.write(": ok\n\n");
+    if (isScene(f) && fs.existsSync(f)) {
+      const scene = sceneFor(f);
+      const c = { res, client };
+      scene.clients.add(c);
+      req.on("close", () => scene.clients.delete(c));
+      return;
+    }
+    // Не сцена (колода) — следим за файлом.
     let last = fs.existsSync(f) ? hash(fs.readFileSync(f)) : "";
     const tick = setInterval(() => {
-      if (!fs.existsSync(f)) return;
-      const h = hash(fs.readFileSync(f));
+      const h = fs.existsSync(f) ? hash(fs.readFileSync(f)) : "";
       if (h === last) return;
       last = h;
-      // Не будим только ту вкладку, которая сама это записала; остальные вкладки — будим.
-      const own = ownWrites.get(f);
-      if (!(own && own.hash === h && own.client === u.searchParams.get("client"))) res.write("data: changed\n\n");
+      res.write(`data: ${JSON.stringify({ type: "reload" })}\n\n`);
     }, 700);
     req.on("close", () => clearInterval(tick));
     return;
   }
+
   let p = path.join(distDir, path.normalize(u.pathname));
   if (!p.startsWith(distDir) || !fs.existsSync(p) || fs.statSync(p).isDirectory()) p = path.join(distDir, "index.html");
   res.setHeader("Content-Type", types[path.extname(p)] || "application/octet-stream");
   // index.html не кэшируем, иначе после пересборки браузер держит старый бандл.
   if (p.endsWith("index.html")) res.setHeader("Cache-Control", "no-cache");
   fs.createReadStream(p).pipe(res);
-}).listen(port, () => console.log(`http://localhost:${port}`));
+}
+
+http.createServer((req, res) => handle(req, res).catch((e) => {
+  console.error(e);
+  if (!res.headersSent) json(res, 500, { error: String(e.message || e) });
+})).listen(port, () => console.log(`http://localhost:${port}`));

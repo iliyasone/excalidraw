@@ -44,7 +44,8 @@ export function Presenter({ file }) {
     loadDeck();
     const watch = (name, fn) => {
       const es = new EventSource(`/api/events?file=${encodeURIComponent(name)}`);
-      es.onmessage = fn;
+      let t;
+      es.onmessage = () => { clearTimeout(t); t = setTimeout(fn, 800); }; // пачка правок — одна перерисовка
       return es;
     };
     const streams = [watch(file, loadScene), watch(deckFile, loadDeck)];
