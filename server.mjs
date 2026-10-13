@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
+import zlib from "node:zlib";
 import { generateKeyBetween } from "fractional-indexing";
 
 const root = path.dirname(new URL(import.meta.url).pathname);
@@ -157,11 +158,42 @@ const readBody = (req) => new Promise((resolve, reject) => {
   req.on("error", reject);
 });
 
-// Отдать файл; ошибка чтения (например, dist пересобирается) — ответ 503, а не падение процесса.
-const sendFile = (res, p, headers = {}) => {
-  fs.createReadStream(p)
-    .on("open", function () { res.writeHead(200, headers); this.pipe(res); })
-    .on("error", () => { if (!res.headersSent) res.writeHead(503).end(); else res.end(); });
+// Ответ со сжатием: brotli или gzip, если браузер умеет; несжимаемое (шрифты, картинки) — как есть.
+const compressible = (type = "") => /json|javascript|css|html|svg|text/.test(type);
+const send = (req, res, status, headers, body) => {
+  const accept = req.headers["accept-encoding"] || "";
+  const enc = body.length < 1024 || !compressible(headers["Content-Type"]) ? null
+    : accept.includes("br") ? "br" : accept.includes("gzip") ? "gzip" : null;
+  if (enc) {
+    body = enc === "br"
+      ? zlib.brotliCompressSync(body, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5 } })
+      : zlib.gzipSync(body);
+    headers = { ...headers, "Content-Encoding": enc, Vary: "Accept-Encoding" };
+  }
+  res.writeHead(status, { ...headers, "Content-Length": body.length });
+  res.end(body);
+};
+
+// Файлы сборки сжимаем один раз и держим в памяти (ключ — путь, время изменения, кодировка).
+const fileCache = new Map();
+const sendFile = (req, res, p, headers = {}) => {
+  let stat;
+  try { stat = fs.statSync(p); } catch { return res.writeHead(404).end(); }
+  const accept = req.headers["accept-encoding"] || "";
+  const enc = !compressible(headers["Content-Type"]) ? "" : accept.includes("br") ? "br" : accept.includes("gzip") ? "gzip" : "";
+  const key = `${p}|${stat.mtimeMs}|${enc}`;
+  let body = fileCache.get(key);
+  if (!body) {
+    try { body = fs.readFileSync(p); } catch { return res.writeHead(503).end(); } // dist пересобирается
+    // Промах кэша: быстрый brotli сейчас, максимальный — в фоне (warmCache).
+    if (enc === "br") body = zlib.brotliCompressSync(body, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 4 } });
+    if (enc === "gzip") body = zlib.gzipSync(body, { level: 6 });
+    fileCache.set(key, body);
+    if (enc === "br") scheduleWarm();
+  }
+  if (enc) headers = { ...headers, "Content-Encoding": enc, Vary: "Accept-Encoding" };
+  res.writeHead(200, { ...headers, "Content-Length": body.length });
+  res.end(body);
 };
 
 const json = (res, status, body) => {
@@ -174,7 +206,7 @@ const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/cs
 
 async function handle(req, res) {
   // Иконка открыта: браузер показывает её во вкладке ещё до ввода пароля.
-  if (req.url === "/favicon.svg") return sendFile(res, path.join(distDir, "favicon.svg"), { "Content-Type": "image/svg+xml" });
+  if (req.url === "/favicon.svg") return sendFile(req, res, path.join(distDir, "favicon.svg"), { "Content-Type": "image/svg+xml" });
   if (!authorized(req)) {
     return res.writeHead(401, { "WWW-Authenticate": 'Basic realm="excalidraw"' }).end();
   }
@@ -208,15 +240,30 @@ async function handle(req, res) {
     if (!fs.existsSync(f)) return json(res, 404, { error: "нет файла" });
     if (!isScene(f)) {
       // Колоды (*.deck.json) — обычные файлы.
-      return sendFile(res, f, { "Content-Type": "application/json; charset=utf-8" });
+      return send(req, res, 200, { "Content-Type": "application/json; charset=utf-8" }, fs.readFileSync(f));
     }
     const scene = sceneFor(f);
-    if (req.method === "GET") return json(res, 200, scene.toJSON());
+    if (req.method === "GET") {
+      const doc = scene.toJSON();
+      // ?lite=1 — без содержимого картинок: браузер берёт их из /api/file и кэширует.
+      if (u.searchParams.get("lite")) {
+        doc.files = Object.fromEntries(Object.entries(doc.files).map(([id, { dataURL, ...meta }]) => [id, meta]));
+      }
+      return send(req, res, 200, { "Content-Type": "application/json; charset=utf-8" }, Buffer.from(JSON.stringify(doc)));
+    }
     // POST/PUT: элементы (целая сцена или только изменённые) — сливаем по версиям.
     const body = JSON.parse(await readBody(req));
     const changed = scene.merge(body.elements, body.files);
     if (changed.elements.length || Object.keys(changed.files).length) scene.broadcast({ type: "elements", ...changed }, client);
     return json(res, 200, { merged: changed.elements.length });
+  }
+
+  if (u.pathname === "/api/file") {
+    // Картинка доски. Excalidraw не меняет файл под тем же id, поэтому кэш на год.
+    const data = isScene(f) && fs.existsSync(f) && sceneFor(f).files[u.searchParams.get("id")];
+    const m = data && /^data:([^;]+);base64,(.*)$/s.exec(data.dataURL);
+    if (!m) return json(res, 404, { error: "нет файла" });
+    return send(req, res, 200, { "Content-Type": m[1], "Cache-Control": "private, max-age=31536000, immutable" }, Buffer.from(m[2], "base64"));
   }
 
   if (u.pathname === "/api/edit" && req.method === "POST") {
@@ -235,7 +282,7 @@ async function handle(req, res) {
     const out = f.replace(/\.excalidraw$/, "") + ".pdf";
     execFile("node", [path.join(root, "scripts/pdf.mjs"), path.basename(f), out], { cwd: root, timeout: 300000 }, (err, _o, stderr) => {
       if (err) return res.writeHead(500).end(stderr || String(err));
-      sendFile(res, out, { "Content-Type": "application/pdf", "Content-Disposition": `inline; filename="${path.basename(out)}"` });
+      sendFile(req, res, out, { "Content-Type": "application/pdf", "Content-Disposition": `inline; filename="${path.basename(out)}"` });
     });
     return;
   }
@@ -265,10 +312,41 @@ async function handle(req, res) {
   let p = path.join(distDir, path.normalize(u.pathname));
   if (!p.startsWith(distDir) || !fs.existsSync(p) || fs.statSync(p).isDirectory()) p = path.join(distDir, "index.html");
   const headers = { "Content-Type": types[path.extname(p)] || "application/octet-stream" };
-  // index.html не кэшируем, иначе после пересборки браузер держит старый бандл.
-  if (p.endsWith("index.html")) headers["Cache-Control"] = "no-cache";
-  sendFile(res, p, headers);
+  // index.html не кэшируем, иначе после пересборки браузер держит старый бандл;
+  // файлы из assets/ и fonts/ с хэшем или неизменны — кэш на год.
+  headers["Cache-Control"] = p.endsWith("index.html") ? "no-cache" : "private, max-age=31536000, immutable";
+  sendFile(req, res, p, headers);
 }
+
+// Сжимаем сборку максимальным brotli в фоне: при старте и после каждой пересборки.
+const maxBrotli = new Set(); // ключи, уже сжатые на максимум
+async function warmCache() {
+  const { promisify } = await import("node:util");
+  const br = promisify(zlib.brotliCompress);
+  for (const name of fs.readdirSync(distDir, { recursive: true })) {
+    const p = path.join(distDir, name);
+    if (!/\.(js|css|html|svg)$/.test(p)) continue;
+    let key;
+    try { key = `${p}|${fs.statSync(p).mtimeMs}|br`; } catch { continue; }
+    if (maxBrotli.has(key)) continue;
+    fileCache.set(key, await br(fs.readFileSync(p), { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 11 } }));
+    maxBrotli.add(key);
+  }
+  // Старые версии файлов из кэша убираем.
+  for (const key of fileCache.keys()) {
+    const [p, mtime] = key.split("|");
+    let now;
+    try { now = String(fs.statSync(p).mtimeMs); } catch { now = null; }
+    if (now !== mtime) { fileCache.delete(key); maxBrotli.delete(key); }
+  }
+}
+let warmTimer;
+const scheduleWarm = () => {
+  clearTimeout(warmTimer);
+  warmTimer = setTimeout(() => warmCache().catch((e) => console.error("warmCache", e)), 1000);
+};
+scheduleWarm();
+fs.watch(path.dirname(distDir), (_, name) => name === "dist" && scheduleWarm());
 
 // HOSTS — адреса через запятую; по умолчанию все интерфейсы.
 for (const host of (process.env.HOSTS || "0.0.0.0").split(",")) {

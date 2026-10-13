@@ -3,22 +3,24 @@
 import { useEffect, useRef, useState } from "react";
 import { restore, exportToSvg } from "@excalidraw/excalidraw";
 import { orderedFrames, deckFrames } from "./deck.js";
+import { fetchScene, fetchFiles } from "./scene.js";
 
-async function renderSlides(scene) {
-  const { elements, files } = restore(scene, null, null);
-  const live = elements.filter((e) => !e.isDeleted);
-  const frames = orderedFrames(live);
-  const slides = [];
-  for (const frame of frames) {
-    const svg = await exportToSvg({
-      elements: live, files, exportingFrame: frame, exportPadding: 0,
-      appState: { exportBackground: true, viewBackgroundColor: "#ffffff", exportWithDarkMode: false },
-    });
-    // Отдельный blob на слайд: у SVG разных фреймов совпадают id клипов.
-    const src = URL.createObjectURL(new Blob([svg.outerHTML], { type: "image/svg+xml" }));
-    slides.push({ id: frame.id, name: frame.name, src });
-  }
-  return { slides, elements: live };
+// Элементы, попадающие в рамку слайда (по габаритам: так же их видит экспорт Excalidraw).
+const inFrame = (frame) => (e) =>
+  e.id === frame.id || e.frameId === frame.id ||
+  (e.x < frame.x + frame.width && e.x + e.width > frame.x && e.y < frame.y + frame.height && e.y + e.height > frame.y);
+
+// Подпись содержимого слайда: если версии элементов не менялись, старую картинку не перерисовываем.
+const signature = (els) => els.map((e) => `${e.id}:${e.version}`).join(",");
+
+async function renderSlide(frame, live, files) {
+  const elements = live.filter(inFrame(frame));
+  const svg = await exportToSvg({
+    elements, files, exportingFrame: frame, exportPadding: 0,
+    appState: { exportBackground: true, viewBackgroundColor: "#ffffff", exportWithDarkMode: false },
+  });
+  // Отдельный blob на слайд: у SVG разных фреймов совпадают id клипов.
+  return { src: URL.createObjectURL(new Blob([svg.outerHTML], { type: "image/svg+xml" })), sig: signature(elements) };
 }
 
 const fetchJson = async (name) => {
@@ -32,16 +34,41 @@ export function Presenter({ file }) {
   const deckFile = file.replace(/\.excalidraw$/, "") + (deckName ? `.${deckName}` : "") + ".deck.json";
   const [scene, setScene] = useState(null); // {slides, elements}
   const [deck, setDeck] = useState(); // undefined — грузится, null — колоды нет
+  const deckRef = useRef(null);
   const [pos, setPos] = useState(0);
   const [detour, setDetour] = useState(null); // запасной слайд поверх основной колоды
   const [grid, setGrid] = useState(false);
   const [idle, setIdle] = useState(false);
 
   useEffect(() => {
-    const loadScene = async () => setScene(await renderSlides(await fetchJson(file)));
-    const loadDeck = async () => setDeck(await fetchJson(deckFile));
-    loadScene();
-    loadDeck();
+    // Слайды рисуются по одному: сначала колода (её порядок), потом запас; показ открывается
+    // с первым готовым слайдом. Неизменившиеся слайды берутся из прошлой отрисовки.
+    let generation = 0;
+    const rendered = new Map(); // frameId -> {src, sig}
+    const loadScene = async () => {
+      const gen = ++generation;
+      const raw = await fetchScene(file);
+      await fetchFiles(file, raw);
+      const { elements, files } = restore(raw, null, null);
+      const live = elements.filter((e) => !e.isDeleted);
+      const frames = orderedFrames(live);
+      const slidesNow = () => frames.map((f) => ({ id: f.id, name: f.name, src: rendered.get(f.id)?.src }));
+      setScene({ slides: slidesNow(), elements: live });
+      const first = deckFrames(live, deckRef.current);
+      const queue = [...first, ...frames.filter((f) => !first.includes(f))];
+      for (const frame of queue) {
+        if (gen !== generation) return; // пришла новая версия доски — эта отрисовка устарела
+        const sig = signature(live.filter(inFrame(frame)));
+        if (rendered.get(frame.id)?.sig === sig) continue;
+        rendered.set(frame.id, await renderSlide(frame, live, files));
+        setScene({ slides: slidesNow(), elements: live });
+      }
+    };
+    const loadDeck = async () => {
+      deckRef.current = await fetchJson(deckFile);
+      setDeck(deckRef.current);
+    };
+    loadDeck().then(loadScene);
     const watch = (name, fn) => {
       const es = new EventSource(`/api/events?file=${encodeURIComponent(name)}`);
       let t;
@@ -101,14 +128,14 @@ export function Presenter({ file }) {
   };
   const thumb = (s, label) => (
     <button key={s.id} style={{ ...css.thumb, ...(s === current ? css.thumbCurrent : null) }} onClick={() => pick(s)}>
-      <img src={s.src} style={css.thumbImg} />
+      {s.src ? <img src={s.src} style={css.thumbImg} /> : <div style={css.thumbImg} />}
       <span style={css.thumbLabel}>{label}</span>
     </button>
   );
 
   return (
     <div style={{ ...css.stage, cursor: idle && !grid ? "none" : "default" }}>
-      {current && <img src={current.src} style={css.slide} onClick={() => !grid && setPos((p) => Math.min(main.length - 1, p + 1))} />}
+      {current?.src && <img src={current.src} style={css.slide} onClick={() => !grid && setPos((p) => Math.min(main.length - 1, p + 1))} />}
       {grid && (
         <div style={css.grid}>
           <div style={css.hint}>← → листать · G сетка · Esc назад · F полный экран</div>

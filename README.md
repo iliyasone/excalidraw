@@ -35,7 +35,8 @@ All endpoints take `?file=<name>.excalidraw`.
 | --- | --- |
 | `GET /api/boards` | Boards with slide count and last change |
 | `POST /api/boards` `{"name"}` | Creates an empty board |
-| `GET /api/scene` | Full scene JSON |
+| `GET /api/scene` | Full scene JSON; with `&lite=1`, images without their data |
+| `GET /api/file?id=<fileId>` | One image of the board, cached by the browser for a year |
 | `POST /api/scene` `{"elements", "files"}` | Merges changed elements (what the editor sends) |
 | `POST /api/edit` `{"add", "update", "delete"}` | Edits for scripts and agents: patches by id, new elements with defaults filled in |
 | `GET /api/events` | Server-Sent Events: `elements` with merged changes, `reload` after the file changed on disk |
