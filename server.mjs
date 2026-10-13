@@ -167,9 +167,9 @@ const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/cs
 
 async function handle(req, res) {
   // Иконка открыта: браузер показывает её во вкладке ещё до ввода пароля.
-  if (["/favicon.svg", "/favicon.png"].includes(req.url)) {
-    res.setHeader("Content-Type", req.url.endsWith(".svg") ? "image/svg+xml" : "image/png");
-    return fs.createReadStream(path.join(distDir, req.url)).pipe(res);
+  if (req.url === "/favicon.svg") {
+    res.setHeader("Content-Type", "image/svg+xml");
+    return fs.createReadStream(path.join(distDir, "favicon.svg")).pipe(res);
   }
   if (!authorized(req)) {
     return res.writeHead(401, { "WWW-Authenticate": 'Basic realm="excalidraw"' }).end();
