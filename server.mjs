@@ -35,6 +35,19 @@ const ELEMENT_DEFAULTS = {
   roundness: null, boundElements: null, link: null, locked: false, isDeleted: false,
 };
 
+const TEXT_DEFAULTS = {
+  fontSize: 20, fontFamily: 5, textAlign: "left", verticalAlign: "top", containerId: null,
+  autoResize: true, lineHeight: 1.25,
+};
+// Примерный размер текста, если его не прислали: ~0.6·fontSize на символ.
+const textBox = (e) => {
+  const lines = String(e.text).split("\n");
+  return {
+    width: Math.max(...lines.map((l) => l.length)) * e.fontSize * 0.6,
+    height: lines.length * e.fontSize * e.lineHeight,
+  };
+};
+
 class Scene {
   constructor(file) {
     this.file = file;
@@ -87,7 +100,10 @@ class Scene {
       const cur = this.elements.get(patch.id);
       if (!cur) throw new Error(`нет элемента ${patch.id}`);
       const next = bump({ ...cur, ...patch });
-      if (cur.type === "text" && "text" in patch && !("originalText" in patch)) next.originalText = patch.text;
+      if (cur.type === "text" && "text" in patch) {
+        if (!("originalText" in patch)) next.originalText = patch.text;
+        if (!("width" in patch)) Object.assign(next, textBox(next));
+      }
       out.push(next);
     }
     for (const id of del) {
@@ -97,10 +113,13 @@ class Scene {
     let last = [...this.elements.values()].map((e) => e.index).filter(Boolean).sort().at(-1) ?? null;
     for (const a of add) {
       last = generateKeyBetween(last, null);
-      out.push({
-        ...ELEMENT_DEFAULTS, ...a, id: a.id || randomId(), seed: a.seed || randomInt(),
+      let e = {
+        ...ELEMENT_DEFAULTS, ...(a.type === "text" ? TEXT_DEFAULTS : {}), ...a,
+        id: a.id || randomId(), seed: a.seed || randomInt(),
         version: 1, versionNonce: randomInt(), updated: now, index: a.index || last,
-      });
+      };
+      if (e.type === "text") e = { originalText: e.text, ...textBox(e), ...e };
+      out.push(e);
     }
     return this.merge(out, files);
   }
