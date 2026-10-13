@@ -166,6 +166,11 @@ const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/cs
   ".woff2": "font/woff2", ".json": "application/json", ".svg": "image/svg+xml" };
 
 async function handle(req, res) {
+  // Иконка открыта: браузер показывает её во вкладке ещё до ввода пароля.
+  if (["/favicon.svg", "/favicon.png"].includes(req.url)) {
+    res.setHeader("Content-Type", req.url.endsWith(".svg") ? "image/svg+xml" : "image/png");
+    return fs.createReadStream(path.join(distDir, req.url)).pipe(res);
+  }
   if (!authorized(req)) {
     return res.writeHead(401, { "WWW-Authenticate": 'Basic realm="excalidraw"' }).end();
   }
@@ -195,6 +200,7 @@ async function handle(req, res) {
   }
 
   if (u.pathname === "/api/scene") {
+    if (!isScene(f) && !f.endsWith(".deck.json")) return json(res, 404, { error: "нет такой доски" });
     if (!fs.existsSync(f)) return json(res, 404, { error: "нет файла" });
     if (!isScene(f)) {
       // Колоды (*.deck.json) — обычные файлы.

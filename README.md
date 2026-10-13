@@ -1,3 +1,5 @@
+<img src="public/favicon.svg" width="64" alt="">
+
 # Excalidraw, self-hosted
 
 The open-source [Excalidraw](https://github.com/excalidraw/excalidraw) editor with a small Node

@@ -9,6 +9,15 @@ Environment=PORT=3010
 # Только localhost и docker0: снаружи доступ через Traefik (deploy/traefik.yaml) по HTTPS.
 Environment=HOSTS=127.0.0.1,172.17.0.1
 Restart=always
+# Песочница: процесс может писать только в data/ и /tmp (PDF-экспорт через Chromium).
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/root/excalidraw/data
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
 
 [Install]
 WantedBy=multi-user.target
