@@ -19,7 +19,15 @@ each other's changes live.
 One frame = one slide. Order: rows top to bottom, left to right within a row (frames are laid out
 on a grid with a 1000 px step along x).
 
-- PDF: `npm run pdf -- <name>.excalidraw` → `data/<name>.pdf` (vector, fonts embedded, ~20 s).
+- Show in Google Meet: http://212.118.40.237:3010/present?file=<name>.excalidraw (also ☰ → «Показ»).
+  Ilias shares that tab. ← → page through the deck, G opens a grid with the deck plus the
+  «Запас» section (every other frame), clicking a spare slide shows it, Esc returns to where he
+  was, F is fullscreen. The tab picks up file changes live.
+- The deck = `data/<name>.deck.json`: `{"slides": [frameId, …]}` in display order. Ilias trims
+  the presentation by talking to you: you edit this list and never delete frames, since dropped
+  slides stay available in «Запас». No file = every frame in board order.
+- PDF: `npm run pdf -- <name>.excalidraw` → `data/<name>.pdf` (vector, fonts embedded, ~20 s); with a deck, only
+  the deck's slides.
   In the browser: ☰ menu → «Слайды в PDF».
 - Look at a slide: `npm run shot -- <name>.excalidraw <number or frame name> [out.png]` → 2x PNG.
   Check every slide you edit this way before reporting.

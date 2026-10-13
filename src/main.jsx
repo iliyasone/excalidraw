@@ -2,8 +2,9 @@ import { createRoot } from "react-dom/client";
 import { useEffect, useRef, useState } from "react";
 import { Excalidraw, MainMenu, serializeAsJSON, restore, exportToSvg } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
+import { Presenter } from "./present.jsx";
 
-window.exportToSvg = exportToSvg; // для tools/export-pdf.mjs
+window.exportToSvg = exportToSvg; // для scripts/pdf.mjs и scripts/shot.mjs
 
 const file = new URLSearchParams(location.search).get("file") || "parallel.excalidraw";
 const url = `/api/scene?file=${encodeURIComponent(file)}`;
@@ -57,6 +58,9 @@ function App() {
     >
       <MainMenu>
         <MainMenu.DefaultItems.SaveAsImage />
+        <MainMenu.Item onSelect={() => open(`/present?file=${encodeURIComponent(file)}`)}>
+          Показ
+        </MainMenu.Item>
         <MainMenu.Item onSelect={() => open(`/api/pdf?file=${encodeURIComponent(file)}`)}>
           Слайды в PDF
         </MainMenu.Item>
@@ -68,4 +72,6 @@ function App() {
   );
 }
 
-createRoot(document.getElementById("root")).render(<App />);
+createRoot(document.getElementById("root")).render(
+  location.pathname === "/present" ? <Presenter file={file} /> : <App />,
+);

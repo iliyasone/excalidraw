@@ -35,9 +35,11 @@ http.createServer((req, res) => {
   if (u.pathname === "/api/scene") {
     const f = sceneFile(u);
     if (req.method === "PUT") {
-      let body = "";
-      req.on("data", (c) => (body += c));
+      // Склеиваем буферы, а не строки: иначе символ UTF-8 на стыке чанков бьётся в «��».
+      const chunks = [];
+      req.on("data", (c) => chunks.push(c));
       req.on("end", () => {
+        const body = Buffer.concat(chunks);
         ownWrites.set(f, hash(body));
         fs.writeFileSync(f + ".tmp", body);
         fs.renameSync(f + ".tmp", f);
