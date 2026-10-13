@@ -23,10 +23,12 @@ on a grid with a 1000 px step along x).
   Ilias shares that tab. ← → page through the deck, G opens a grid with the deck plus the
   «Запас» section (every other frame), clicking a spare slide shows it, Esc returns to where he
   was, F is fullscreen. The tab picks up file changes live.
-- The deck = `data/<name>.deck.json`: `{"slides": [frameId, …]}` in display order. Extra variants
-  live in `data/<name>.<deck>.deck.json` and open with `&deck=<deck>` (PDF: `--deck=<deck>`). Ilias trims
-  the presentation by talking to you: you edit this list and never delete frames, since dropped
-  slides stay available in «Запас». No file = every frame in board order.
+- The deck = `data/<name>.deck.json`. `{"row": 1, "dropLast": 3}` means the board's first row as
+  it is right now, without the last three, so it follows Ilias as he drags frames around. An
+  explicit list is `{"slides": [frameId, …]}`. Rows and order come from `src/deck.js`. Extra
+  variants live in `data/<name>.<deck>.deck.json` and open with `&deck=<deck>` (PDF:
+  `--deck=<deck>`). Ilias trims the presentation by talking to you: change the deck, never
+  delete frames, since dropped slides stay in «Запас». No file = every frame.
 - PDF: `npm run pdf -- <name>.excalidraw` → `data/<name>.pdf` (vector, fonts embedded, ~20 s); with a deck, only
   the deck's slides.
   In the browser: ☰ menu → «Слайды в PDF».

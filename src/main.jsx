@@ -7,7 +7,8 @@ import { Presenter } from "./present.jsx";
 window.exportToSvg = exportToSvg; // для scripts/pdf.mjs и scripts/shot.mjs
 
 const file = new URLSearchParams(location.search).get("file") || "parallel.excalidraw";
-const url = `/api/scene?file=${encodeURIComponent(file)}`;
+const client = Math.random().toString(36).slice(2); // id вкладки: сервер не шлёт ей её же записи
+const url = `/api/scene?file=${encodeURIComponent(file)}&client=${client}`;
 
 function App() {
   const [initial, setInitial] = useState(null);
@@ -24,7 +25,7 @@ function App() {
   useEffect(() => {
     load().then((d) => setInitial(d));
     // Файл поменяли снаружи (агент) — подтягиваем без перезагрузки страницы.
-    const es = new EventSource(`/api/events?file=${encodeURIComponent(file)}`);
+    const es = new EventSource(`/api/events?file=${encodeURIComponent(file)}&client=${client}`);
     es.onmessage = async () => {
       if (!api.current) return;
       const d = await load();

@@ -15,7 +15,3 @@ export async function openScene(file) {
   await page.waitForFunction(() => window.excalidrawAPI, null, { timeout: 60000 });
   return { browser, ctx, page };
 }
-
-// Слайды = фреймы; порядок — ряды сверху вниз, в ряду слева направо.
-export const sortedFramesJs = `(els) => els.filter((e) => e.type === "frame")
-  .sort((a, b) => Math.round(a.y / 100) - Math.round(b.y / 100) || a.x - b.x)`;

@@ -3,24 +3,26 @@
 // Если есть data/<name>.deck.json (или data/<name>.<deck>.deck.json) — только слайды колоды, в её порядке.
 import fs from "node:fs";
 import path from "node:path";
-import { openScene, sortedFramesJs } from "./browser.mjs";
+import { openScene } from "./browser.mjs";
+import { deckFrames } from "../src/deck.js";
 
 const deckName = process.argv.find((a) => a.startsWith("--deck="))?.slice(7);
 const [file = "parallel.excalidraw", outArg] = process.argv.slice(2).filter((a) => !a.startsWith("--"));
 const base = path.basename(file, ".excalidraw") + (deckName ? `.${deckName}` : "");
 const out = outArg || path.join("data", base + ".pdf");
 const deckPath = path.join("data", base + ".deck.json");
-const deck = fs.existsSync(deckPath) ? JSON.parse(fs.readFileSync(deckPath, "utf8")).slides : null;
+const deck = fs.existsSync(deckPath) ? JSON.parse(fs.readFileSync(deckPath, "utf8")) : null;
+const scene = JSON.parse(fs.readFileSync(path.join("data", path.basename(file)), "utf8"));
+const frameIds = deckFrames(scene.elements, deck).map((f) => f.id);
 const { browser, ctx, page } = await openScene(file);
 
-const slides = await page.evaluate(async ([sortFrames, deck]) => {
+const slides = await page.evaluate(async (frameIds) => {
   const api = window.excalidrawAPI;
   const elements = api.getSceneElements();
   const files = api.getFiles();
   const res = [];
-  const sorted = eval(sortFrames)(elements);
-  const frames = deck ? deck.map((id) => sorted.find((f) => f.id === id)).filter(Boolean) : sorted;
-  for (const frame of frames) {
+  for (const id of frameIds) {
+    const frame = elements.find((e) => e.id === id);
     const svg = await window.exportToSvg({
       elements, files, exportingFrame: frame, exportPadding: 0,
       appState: { exportBackground: true, viewBackgroundColor: "#ffffff", exportWithDarkMode: false },
@@ -28,7 +30,7 @@ const slides = await page.evaluate(async ([sortFrames, deck]) => {
     res.push({ w: frame.width, h: frame.height, svg: svg.outerHTML });
   }
   return res;
-}, [sortedFramesJs, deck]);
+}, frameIds);
 
 const { w, h } = slides[0];
 const html = `<!doctype html><html><head><style>

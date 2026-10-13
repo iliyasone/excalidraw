@@ -2,13 +2,12 @@
 // G открывает сетку всех слайдов, включая запасные; Esc возвращает туда, где был.
 import { useEffect, useRef, useState } from "react";
 import { restore, exportToSvg } from "@excalidraw/excalidraw";
-
-const byPosition = (a, b) => Math.round(a.y / 100) - Math.round(b.y / 100) || a.x - b.x;
+import { orderedFrames, deckFrames } from "./deck.js";
 
 async function renderSlides(scene) {
   const { elements, files } = restore(scene, null, null);
   const live = elements.filter((e) => !e.isDeleted);
-  const frames = live.filter((e) => e.type === "frame").sort(byPosition);
+  const frames = orderedFrames(live);
   const slides = [];
   for (const frame of frames) {
     const svg = await exportToSvg({
@@ -19,7 +18,7 @@ async function renderSlides(scene) {
     const src = URL.createObjectURL(new Blob([svg.outerHTML], { type: "image/svg+xml" }));
     slides.push({ id: frame.id, name: frame.name, src });
   }
-  return slides;
+  return { slides, elements: live };
 }
 
 const fetchJson = async (name) => {
@@ -31,16 +30,16 @@ export function Presenter({ file }) {
   // ?deck=full → data/<name>.full.deck.json; без параметра — data/<name>.deck.json.
   const deckName = new URLSearchParams(location.search).get("deck");
   const deckFile = file.replace(/\.excalidraw$/, "") + (deckName ? `.${deckName}` : "") + ".deck.json";
-  const [slides, setSlides] = useState(null);
-  const [deckIds, setDeckIds] = useState(null);
+  const [scene, setScene] = useState(null); // {slides, elements}
+  const [deck, setDeck] = useState(); // undefined — грузится, null — колоды нет
   const [pos, setPos] = useState(0);
   const [detour, setDetour] = useState(null); // запасной слайд поверх основной колоды
   const [grid, setGrid] = useState(false);
   const [idle, setIdle] = useState(false);
 
   useEffect(() => {
-    const loadScene = async () => setSlides(await renderSlides(await fetchJson(file)));
-    const loadDeck = async () => setDeckIds((await fetchJson(deckFile))?.slides ?? []);
+    const loadScene = async () => setScene(await renderSlides(await fetchJson(file)));
+    const loadDeck = async () => setDeck(await fetchJson(deckFile));
     loadScene();
     loadDeck();
     const watch = (name, fn) => {
@@ -52,10 +51,11 @@ export function Presenter({ file }) {
     return () => streams.forEach((es) => es.close());
   }, []);
 
-  const byId = new Map((slides || []).map((s) => [s.id, s]));
-  const main = deckIds?.length ? deckIds.map((id) => byId.get(id)).filter(Boolean) : slides || [];
+  const slides = scene?.slides || [];
+  const byId = new Map(slides.map((s) => [s.id, s]));
+  const main = scene ? deckFrames(scene.elements, deck).map((f) => byId.get(f.id)).filter(Boolean) : [];
   const mainIds = new Set(main.map((s) => s.id));
-  const spare = (slides || []).filter((s) => !mainIds.has(s.id));
+  const spare = slides.filter((s) => !mainIds.has(s.id));
   const current = detour ? byId.get(detour) : main[Math.min(pos, main.length - 1)];
 
   const state = useRef();
@@ -91,7 +91,7 @@ export function Presenter({ file }) {
     return () => removeEventListener("mousemove", move);
   }, []);
 
-  if (!slides || !deckIds) return <div style={css.loading}>Готовлю слайды…</div>;
+  if (!scene || deck === undefined) return <div style={css.loading}>Готовлю слайды…</div>;
 
   const pick = (s) => {
     const i = main.findIndex((m) => m.id === s.id);

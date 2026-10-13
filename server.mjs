@@ -17,7 +17,7 @@ const authorized = (req) => {
   const [, b64] = (req.headers.authorization || "").split(" ");
   return Buffer.from(b64 || "", "base64").toString().split(":").slice(1).join(":") === password;
 };
-const ownWrites = new Map(); // file -> hash последней записи из браузера
+const ownWrites = new Map(); // file -> {hash, client} последней записи из браузера
 
 const sceneFile = (u) => {
   const name = path.basename(u.searchParams.get("file") || "parallel.excalidraw");
@@ -40,7 +40,7 @@ http.createServer((req, res) => {
       req.on("data", (c) => chunks.push(c));
       req.on("end", () => {
         const body = Buffer.concat(chunks);
-        ownWrites.set(f, hash(body));
+        ownWrites.set(f, { hash: hash(body), client: u.searchParams.get("client") });
         fs.writeFileSync(f + ".tmp", body);
         fs.renameSync(f + ".tmp", f);
         res.end("ok");
@@ -70,7 +70,9 @@ http.createServer((req, res) => {
       const h = hash(fs.readFileSync(f));
       if (h === last) return;
       last = h;
-      if (h !== ownWrites.get(f)) res.write("data: changed\n\n");
+      // Не будим только ту вкладку, которая сама это записала; остальные вкладки — будим.
+      const own = ownWrites.get(f);
+      if (!(own && own.hash === h && own.client === u.searchParams.get("client"))) res.write("data: changed\n\n");
     }, 700);
     req.on("close", () => clearInterval(tick));
     return;
