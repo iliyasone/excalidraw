@@ -6,7 +6,7 @@ description: Work on Excalidraw boards and slide decks hosted on this machine's 
 # Excalidraw on this machine
 
 The server lives in `/root/excalidraw` (systemd unit `excalidraw`) and listens on `localhost:3010`;
-people open it at http://212.118.40.237:3010 (the home page lists all boards).
+people open it at https://excalidraw.sheetlife.app (the home page lists all boards).
 Boards are `data/<name>.excalidraw` files in that repo. A person may have the same board open in a
 browser at the same time as you: the server merges edits element by element by `version`, so go
 through the HTTP API and never write the board file yourself.
@@ -43,7 +43,7 @@ height below the row's first frame), left to right within a row.
 - Render a slide to check your work: `cd /root/excalidraw && npm run shot -- <file> <slide> /tmp/out.png`,
   where `<slide>` is a frame name or its 1-based number in board order.
 - PDF: `npm run pdf -- <file> [out.pdf] [--deck=<name>]`, one vector page per slide.
-- Presenting: `http://212.118.40.237:3010/present?file=<file>`; arrows page through the deck, G
+- Presenting: `https://excalidraw.sheetlife.app/present?file=<file>`; arrows page through the deck, G
   shows every slide including the ones outside the deck.
 - The deck is a small JSON file you write directly next to the board:
   `data/<board>.deck.json`, or `data/<board>.<name>.deck.json` opened with `&deck=<name>`.

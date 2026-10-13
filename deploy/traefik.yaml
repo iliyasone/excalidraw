@@ -1,0 +1,23 @@
+# Self-hosted Excalidraw (/root/excalidraw, systemd unit excalidraw on the host, port 3010).
+http:
+  routers:
+    excalidraw-http:
+      entryPoints: [http]
+      rule: Host(`excalidraw.sheetlife.app`)
+      middlewares: [excalidraw-https]
+      service: excalidraw
+    excalidraw:
+      entryPoints: [https]
+      rule: Host(`excalidraw.sheetlife.app`)
+      service: excalidraw
+      tls:
+        certResolver: letsencrypt
+  middlewares:
+    excalidraw-https:
+      redirectScheme:
+        scheme: https
+  services:
+    excalidraw:
+      loadBalancer:
+        servers:
+          - url: http://host.docker.internal:3010

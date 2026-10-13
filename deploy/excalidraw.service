@@ -1,11 +1,13 @@
 [Unit]
 Description=Excalidraw (self-hosted)
-After=network.target
+After=network.target docker.service
 
 [Service]
 WorkingDirectory=/root/excalidraw
 ExecStart=/usr/bin/node server.mjs
 Environment=PORT=3010
+# Только localhost и docker0: снаружи доступ через Traefik (deploy/traefik.yaml) по HTTPS.
+Environment=HOSTS=127.0.0.1,172.17.0.1
 Restart=always
 
 [Install]

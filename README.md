@@ -21,7 +21,9 @@ openssl rand -hex 8 > data/password
 npm start                         # http://localhost:3010, Basic auth with any login and that password
 ```
 
-`deploy/excalidraw.service` is a systemd unit for running it permanently.
+`deploy/excalidraw.service` is a systemd unit for running it permanently, and
+`deploy/traefik.yaml` publishes it over HTTPS through Traefik. `HOSTS` (comma-separated, default
+`0.0.0.0`) sets the addresses the server listens on.
 
 ## API
 

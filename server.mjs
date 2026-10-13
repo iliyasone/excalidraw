@@ -263,7 +263,10 @@ async function handle(req, res) {
   fs.createReadStream(p).pipe(res);
 }
 
-http.createServer((req, res) => handle(req, res).catch((e) => {
-  console.error(e);
-  if (!res.headersSent) json(res, 500, { error: String(e.message || e) });
-})).listen(port, () => console.log(`http://localhost:${port}`));
+// HOSTS — адреса через запятую; по умолчанию все интерфейсы.
+for (const host of (process.env.HOSTS || "0.0.0.0").split(",")) {
+  http.createServer((req, res) => handle(req, res).catch((e) => {
+    console.error(e);
+    if (!res.headersSent) json(res, 500, { error: String(e.message || e) });
+  })).listen(port, host, () => console.log(`http://${host}:${port}`));
+}
