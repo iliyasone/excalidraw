@@ -3,3 +3,5 @@ dist/
 public/fonts/
 data/
 *.log
+.dist-next/
+.dist-old/

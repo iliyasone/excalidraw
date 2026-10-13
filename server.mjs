@@ -157,6 +157,13 @@ const readBody = (req) => new Promise((resolve, reject) => {
   req.on("error", reject);
 });
 
+// Отдать файл; ошибка чтения (например, dist пересобирается) — ответ 503, а не падение процесса.
+const sendFile = (res, p, headers = {}) => {
+  fs.createReadStream(p)
+    .on("open", function () { res.writeHead(200, headers); this.pipe(res); })
+    .on("error", () => { if (!res.headersSent) res.writeHead(503).end(); else res.end(); });
+};
+
 const json = (res, status, body) => {
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(body));
@@ -167,10 +174,7 @@ const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/cs
 
 async function handle(req, res) {
   // Иконка открыта: браузер показывает её во вкладке ещё до ввода пароля.
-  if (req.url === "/favicon.svg") {
-    res.setHeader("Content-Type", "image/svg+xml");
-    return fs.createReadStream(path.join(distDir, "favicon.svg")).pipe(res);
-  }
+  if (req.url === "/favicon.svg") return sendFile(res, path.join(distDir, "favicon.svg"), { "Content-Type": "image/svg+xml" });
   if (!authorized(req)) {
     return res.writeHead(401, { "WWW-Authenticate": 'Basic realm="excalidraw"' }).end();
   }
@@ -204,8 +208,7 @@ async function handle(req, res) {
     if (!fs.existsSync(f)) return json(res, 404, { error: "нет файла" });
     if (!isScene(f)) {
       // Колоды (*.deck.json) — обычные файлы.
-      res.setHeader("Content-Type", "application/json; charset=utf-8");
-      return fs.createReadStream(f).pipe(res);
+      return sendFile(res, f, { "Content-Type": "application/json; charset=utf-8" });
     }
     const scene = sceneFor(f);
     if (req.method === "GET") return json(res, 200, scene.toJSON());
@@ -232,9 +235,7 @@ async function handle(req, res) {
     const out = f.replace(/\.excalidraw$/, "") + ".pdf";
     execFile("node", [path.join(root, "scripts/pdf.mjs"), path.basename(f), out], { cwd: root, timeout: 300000 }, (err, _o, stderr) => {
       if (err) return res.writeHead(500).end(stderr || String(err));
-      res.writeHead(200, { "Content-Type": "application/pdf",
-        "Content-Disposition": `inline; filename="${path.basename(out)}"` });
-      fs.createReadStream(out).pipe(res);
+      sendFile(res, out, { "Content-Type": "application/pdf", "Content-Disposition": `inline; filename="${path.basename(out)}"` });
     });
     return;
   }
@@ -263,10 +264,10 @@ async function handle(req, res) {
 
   let p = path.join(distDir, path.normalize(u.pathname));
   if (!p.startsWith(distDir) || !fs.existsSync(p) || fs.statSync(p).isDirectory()) p = path.join(distDir, "index.html");
-  res.setHeader("Content-Type", types[path.extname(p)] || "application/octet-stream");
+  const headers = { "Content-Type": types[path.extname(p)] || "application/octet-stream" };
   // index.html не кэшируем, иначе после пересборки браузер держит старый бандл.
-  if (p.endsWith("index.html")) res.setHeader("Cache-Control", "no-cache");
-  fs.createReadStream(p).pipe(res);
+  if (p.endsWith("index.html")) headers["Cache-Control"] = "no-cache";
+  sendFile(res, p, headers);
 }
 
 // HOSTS — адреса через запятую; по умолчанию все интерфейсы.

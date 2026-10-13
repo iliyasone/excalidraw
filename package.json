@@ -2,7 +2,7 @@
   "name": "excalidraw-local",
   "description": "Локальный Excalidraw: браузер и агенты правят один .excalidraw-файл; слайды в PDF",
   "scripts": {
-    "build": "cp -r node_modules/@excalidraw/excalidraw/dist/prod/fonts public/ && vite build",
+    "build": "cp -r node_modules/@excalidraw/excalidraw/dist/prod/fonts public/ && vite build --outDir .dist-next --emptyOutDir && rm -rf .dist-old && mv dist .dist-old 2>/dev/null; mv .dist-next dist && rm -rf .dist-old",
     "start": "node server.mjs",
     "pdf": "node scripts/pdf.mjs",
     "shot": "node scripts/shot.mjs"
