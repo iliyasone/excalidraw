@@ -1,0 +1,12 @@
+[Unit]
+Description=Local Excalidraw (http://212.118.40.237:3010)
+After=network.target
+
+[Service]
+WorkingDirectory=/root/excalidraw-local
+ExecStart=/usr/bin/node server.mjs
+Environment=PORT=3010
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,22 @@
+{
+  "name": "excalidraw-local",
+  "description": "Локальный Excalidraw: браузер и агенты правят один .excalidraw-файл; слайды в PDF",
+  "scripts": {
+    "build": "cp -r node_modules/@excalidraw/excalidraw/dist/prod/fonts public/ && vite build",
+    "start": "node server.mjs",
+    "pdf": "node scripts/pdf.mjs",
+    "shot": "node scripts/shot.mjs"
+  },
+  "type": "module",
+  "dependencies": {
+    "@excalidraw/excalidraw": "^0.18.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.1.2",
+    "playwright": "1.58",
+    "vite": "^8.3.4"
+  },
+  "private": true
+}
