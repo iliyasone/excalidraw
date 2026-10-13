@@ -28,7 +28,9 @@ const fetchJson = async (name) => {
 };
 
 export function Presenter({ file }) {
-  const deckFile = file.replace(/\.excalidraw$/, "") + ".deck.json";
+  // ?deck=full → data/<name>.full.deck.json; без параметра — data/<name>.deck.json.
+  const deckName = new URLSearchParams(location.search).get("deck");
+  const deckFile = file.replace(/\.excalidraw$/, "") + (deckName ? `.${deckName}` : "") + ".deck.json";
   const [slides, setSlides] = useState(null);
   const [deckIds, setDeckIds] = useState(null);
   const [pos, setPos] = useState(0);

@@ -1,13 +1,15 @@
-// Usage: node scripts/pdf.mjs <file.excalidraw> [out.pdf]
+// Usage: node scripts/pdf.mjs <file.excalidraw> [out.pdf] [--deck=<name>]
 // Каждый фрейм — страница PDF, вектор, шрифты встроены.
-// Если есть data/<name>.deck.json — только слайды колоды, в её порядке.
+// Если есть data/<name>.deck.json (или data/<name>.<deck>.deck.json) — только слайды колоды, в её порядке.
 import fs from "node:fs";
 import path from "node:path";
 import { openScene, sortedFramesJs } from "./browser.mjs";
 
-const file = process.argv[2] || "parallel.excalidraw";
-const out = process.argv[3] || path.join("data", path.basename(file, ".excalidraw") + ".pdf");
-const deckPath = path.join("data", path.basename(file, ".excalidraw") + ".deck.json");
+const deckName = process.argv.find((a) => a.startsWith("--deck="))?.slice(7);
+const [file = "parallel.excalidraw", outArg] = process.argv.slice(2).filter((a) => !a.startsWith("--"));
+const base = path.basename(file, ".excalidraw") + (deckName ? `.${deckName}` : "");
+const out = outArg || path.join("data", base + ".pdf");
+const deckPath = path.join("data", base + ".deck.json");
 const deck = fs.existsSync(deckPath) ? JSON.parse(fs.readFileSync(deckPath, "utf8")).slides : null;
 const { browser, ctx, page } = await openScene(file);
 
