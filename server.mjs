@@ -14,7 +14,7 @@ const distDir = path.join(root, "dist");
 const port = Number(process.env.PORT || 3010);
 const hash = (s) => crypto.createHash("sha1").update(s).digest("hex");
 // Порт смотрит в интернет — Basic auth (логин любой, пароль в файле).
-const password = fs.readFileSync("/root/.config/excalidraw-local/password", "utf8").trim();
+const password = fs.readFileSync(path.join(dataDir, "password"), "utf8").trim();
 const authorized = (req) => {
   const [, b64] = (req.headers.authorization || "").split(" ");
   return Buffer.from(b64 || "", "base64").toString().split(":").slice(1).join(":") === password;
@@ -127,7 +127,7 @@ const sceneFor = (f) => {
   return scenes.get(f);
 };
 
-const fileParam = (u) => path.join(dataDir, path.basename(u.searchParams.get("file") || "parallel.excalidraw"));
+const fileParam = (u) => path.join(dataDir, path.basename(u.searchParams.get("file") || ""));
 const isScene = (f) => f.endsWith(".excalidraw");
 
 const readBody = (req) => new Promise((resolve, reject) => {
@@ -153,6 +153,27 @@ async function handle(req, res) {
   const u = new URL(req.url, "http://x");
   const f = fileParam(u);
   const client = u.searchParams.get("client");
+
+  if (u.pathname === "/api/boards") {
+    if (req.method === "POST") {
+      // Новая доска: имя файла = имя доски без символов, недопустимых в пути.
+      const { name } = JSON.parse(await readBody(req));
+      const base = String(name || "").replace(/[\/\\:*?"<>|]/g, " ").trim();
+      if (!base) return json(res, 400, { error: "нужно имя" });
+      const file = base + ".excalidraw";
+      const p = path.join(dataDir, file);
+      if (fs.existsSync(p)) return json(res, 409, { error: "такая доска уже есть", file });
+      fs.writeFileSync(p, JSON.stringify({ type: "excalidraw", version: 2, source: "excalidraw-self-hosted", elements: [], appState: { viewBackgroundColor: "#ffffff" }, files: {} }));
+      return json(res, 201, { file });
+    }
+    const boards = fs.readdirSync(dataDir).filter(isScene).map((file) => {
+      const p = path.join(dataDir, file);
+      const elements = scenes.has(p) ? [...scenes.get(p).elements.values()] : JSON.parse(fs.readFileSync(p, "utf8")).elements;
+      const live = elements.filter((e) => !e.isDeleted);
+      return { file, slides: live.filter((e) => e.type === "frame").length, elements: live.length, updated: fs.statSync(p).mtimeMs };
+    });
+    return json(res, 200, boards.sort((a, b) => b.updated - a.updated));
+  }
 
   if (u.pathname === "/api/scene") {
     if (!fs.existsSync(f)) return json(res, 404, { error: "нет файла" });

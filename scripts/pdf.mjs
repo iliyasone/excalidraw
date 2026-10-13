@@ -7,7 +7,7 @@ import { openScene } from "./browser.mjs";
 import { deckFrames } from "../src/deck.js";
 
 const deckName = process.argv.find((a) => a.startsWith("--deck="))?.slice(7);
-const [file = "parallel.excalidraw", outArg] = process.argv.slice(2).filter((a) => !a.startsWith("--"));
+const [file, outArg] = process.argv.slice(2).filter((a) => !a.startsWith("--"));
 const base = path.basename(file, ".excalidraw") + (deckName ? `.${deckName}` : "");
 const out = outArg || path.join("data", base + ".pdf");
 const deckPath = path.join("data", base + ".deck.json");

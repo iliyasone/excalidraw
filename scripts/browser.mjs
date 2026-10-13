@@ -4,7 +4,7 @@ import { chromium } from "playwright";
 import fs from "node:fs";
 import path from "node:path";
 
-export const password = () => fs.readFileSync("/root/.config/excalidraw-local/password", "utf8").trim();
+export const password = () => fs.readFileSync(new URL("../data/password", import.meta.url), "utf8").trim();
 export const port = process.env.PORT || 3010;
 
 export async function openScene(file) {

@@ -3,10 +3,11 @@ import { useEffect, useRef, useState } from "react";
 import { Excalidraw, MainMenu, restore, exportToSvg, reconcileElements, CaptureUpdateAction } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
 import { Presenter } from "./present.jsx";
+import { Home } from "./home.jsx";
 
 window.exportToSvg = exportToSvg; // для scripts/pdf.mjs и scripts/shot.mjs
 
-const file = new URLSearchParams(location.search).get("file") || "parallel.excalidraw";
+const file = new URLSearchParams(location.search).get("file");
 const client = Math.random().toString(36).slice(2); // id вкладки: сервер не шлёт ей её же записи
 const url = `/api/scene?file=${encodeURIComponent(file)}&client=${client}`;
 
@@ -77,6 +78,8 @@ function App() {
       name={file}
     >
       <MainMenu>
+        <MainMenu.Item onSelect={() => (location.href = "/")}>Все доски</MainMenu.Item>
+        <MainMenu.Separator />
         <MainMenu.DefaultItems.SaveAsImage />
         <MainMenu.Item onSelect={() => open(`/present?file=${encodeURIComponent(file)}`)}>
           Показ
@@ -93,5 +96,5 @@ function App() {
 }
 
 createRoot(document.getElementById("root")).render(
-  location.pathname === "/present" ? <Presenter file={file} /> : <App />,
+  !file ? <Home /> : location.pathname === "/present" ? <Presenter file={file} /> : <App />,
 );
