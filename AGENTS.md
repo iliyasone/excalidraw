@@ -31,7 +31,7 @@ on a grid with a 1000 px step along x).
   In the browser: ☰ menu → «Слайды в PDF».
 - Look at a slide: `npm run shot -- <name>.excalidraw <number or frame name> [out.png]` → 2x PNG.
   Check every slide you edit this way before reporting.
-- Send the finished PDF to Ilias in Telegram, don't make him download it:
+- Build and send the PDF only when Ilias asks. Send it to him in Telegram as a file, not as a link:
   `curl -F chat_id=… -F document=@data/<name>.pdf https://api.telegram.org/bot…/sendDocument`
   with the bot from `~/.config/claude-telegram/env` (the same bot as the `tg-notify` skill).
 
