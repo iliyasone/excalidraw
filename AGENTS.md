@@ -11,6 +11,10 @@ about changing the server and the frontend.
 - `src/main.jsx`: the editor. Sends only elements whose `version` the server hasn't seen and
   merges incoming ones with `reconcileElements`, so a remote change never overwrites a local
   edit in progress.
+- Sharing by link: `/s/<token>` and API calls with `?share=<token>` skip the password but reach only
+  the token's board (`shareAllows` in `server.mjs` lists what they may do); tokens are in
+  `data/shares.json`. `src/access.js` builds the board part of API URLs for both modes,
+  `src/share.jsx` is the owner's dialog.
 - `src/present.jsx`: presenter view; `src/home.jsx`: board list; `src/deck.js`: slide order and
   decks, shared by the browser and the export scripts.
 - `scripts/`: PDF and PNG export through headless Chromium (Playwright) that opens the real

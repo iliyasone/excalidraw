@@ -22,6 +22,13 @@ curl -s -u "$AUTH" "$B/api/scene?file=Roadmap.excalidraw"            # full scen
 curl -s -u "$AUTH" "$B/api/edit?file=Roadmap.excalidraw" -d '{"add": [...], "update": [...], "delete": [...]}'
 ```
 
+Share a board with someone without the password (a secret link to that board only):
+
+```bash
+curl -s -u "$AUTH" "$B/api/shares?file=Roadmap.excalidraw" -d '{"mode": "view"}'   # or "edit" → {"token", …}
+# link: https://excalidraw.sheetlife.app/s/<token>; revoke: curl -X DELETE with the same URL
+```
+
 URL-encode `file` in API URLs when the name has spaces or non-Latin letters.
 
 `/api/edit`:
