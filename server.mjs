@@ -251,7 +251,18 @@ const sendDist = (req, res, p, headers = {}) => sendFile(req, res, p, {
 // Правка от гостя: только элементы и картинки той формы, которую merge, сортировка и /api/file
 // переварят; иначе один кривой запрос уронит сервер при сохранении.
 const plain = (x) => x !== null && typeof x === "object" && !Array.isArray(x);
-const validGuestBody = (b) => plain(b)
+// Глубина вложенности без рекурсии: на слишком глубоком JSON.stringify падает с переполнением стека.
+const shallow = (root, max = 32) => {
+  const stack = [[root, 0]];
+  while (stack.length) {
+    const [x, d] = stack.pop();
+    if (x === null || typeof x !== "object") continue;
+    if (d > max) return false;
+    for (const v of Object.values(x)) stack.push([v, d + 1]);
+  }
+  return true;
+};
+const validGuestBody = (b) => plain(b) && shallow(b)
   && (b.elements === undefined || (Array.isArray(b.elements) && b.elements.every((e) => plain(e)
     && typeof e.id === "string" && Number.isFinite(e.version) && Number.isFinite(e.versionNonce)
     && (e.index == null || typeof e.index === "string"))))
