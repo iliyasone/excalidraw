@@ -2,15 +2,30 @@ import { useEffect, useRef, useState } from "react";
 import { Excalidraw, MainMenu, restore, exportToSvg, reconcileElements, CaptureUpdateAction } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
 import { fetchScene, fetchFiles } from "./scene.js";
+import { share, boardQuery } from "./access.js";
+import { ShareDialog } from "./share.jsx";
 
 window.exportToSvg = exportToSvg; // для scripts/pdf.mjs и scripts/shot.mjs
 
-const file = new URLSearchParams(location.search).get("file");
 const client = Math.random().toString(36).slice(2); // id вкладки: сервер не шлёт ей её же записи
-const url = `/api/scene?file=${encodeURIComponent(file)}&client=${client}`;
 
-export function Editor() {
+const gone = <p style={{ font: "16px system-ui", padding: 40, color: "#555" }}>Ссылка не действует: доступ к доске закрыли.</p>;
+
+// Доска по ссылке /s/<токен>: имя доски и права (просмотр или правка) знает только сервер.
+export function Shared() {
+  const [info, setInfo] = useState(); // undefined — грузится, null — ссылку отозвали
+  useEffect(() => {
+    fetch(`/api/shared?${boardQuery()}`).then((r) => (r.ok ? r.json() : null)).then(setInfo, () => setInfo(null));
+  }, []);
+  if (info === undefined) return null;
+  return info ? <Editor file={info.file} mode={info.mode} /> : gone;
+}
+
+// mode: "edit" или "view" (тогда правки не отправляются, а сервер их и не примет).
+export function Editor({ file, mode = "edit" }) {
+  const url = `/api/scene?${boardQuery(file)}&client=${client}`;
   const [initial, setInitial] = useState(null);
+  const [sharing, setSharing] = useState(false);
   const api = useRef(null);
   const synced = useRef(new Map()); // id -> version, которую сервер уже знает
   const sentFiles = useRef(new Set());
@@ -33,11 +48,13 @@ export function Editor() {
 
   useEffect(() => {
     load().then((d) => setInitial(d));
-    const es = new EventSource(`/api/events?file=${encodeURIComponent(file)}&client=${client}`);
+    const es = new EventSource(`/api/events?${boardQuery(file)}&client=${client}`);
     es.onmessage = async (ev) => {
+      const msg = JSON.parse(ev.data);
+      // Ссылку отозвали или сменили ей права: перезагрузка откроет доску с новыми или покажет, что доступа нет.
+      if (msg.type === "share-changed") return location.reload();
       const a = api.current;
       if (!a) return;
-      const msg = JSON.parse(ev.data);
       if (msg.type === "reload") {
         const d = await load();
         a.updateScene({ elements: d.elements, captureUpdate: CaptureUpdateAction.NEVER });
@@ -49,11 +66,20 @@ export function Editor() {
       const elements = reconcileElements(a.getSceneElementsIncludingDeleted(), msg.elements, a.getAppState());
       a.updateScene({ elements, captureUpdate: CaptureUpdateAction.NEVER });
     };
+    // Поток закрылся насовсем (сервер ответил 403 — ссылку отозвали): перезагрузка покажет это.
+    es.onerror = () => share && es.readyState === EventSource.CLOSED && location.reload();
+    // Пока поток не был подключён (при открытии или после обрыва), права ссылки могли смениться.
+    es.onopen = async () => {
+      if (!share) return;
+      const r = await fetch(`/api/shared?${boardQuery(file)}`);
+      if (!r.ok || (await r.json()).mode !== mode) location.reload();
+    };
     return () => es.close();
   }, []);
 
   // Шлём только элементы, чья версия отличается от известной серверу.
   const onChange = () => {
+    if (mode !== "edit") return;
     clearTimeout(timer.current);
     timer.current = setTimeout(async () => {
       const a = api.current;
@@ -61,12 +87,13 @@ export function Editor() {
       const files = Object.fromEntries(Object.entries(a.getFiles()).filter(([id]) => !sentFiles.current.has(id)));
       if (!elements.length && !Object.keys(files).length) return;
       remember(elements, files);
-      await fetch(url, { method: "POST", body: JSON.stringify({ elements, files }) });
+      const r = await fetch(url, { method: "POST", body: JSON.stringify({ elements, files }) });
+      if (share && r.status === 403) location.reload();
     }, 250);
   };
 
   if (!initial) return null;
-  return (
+  return (<>
     <Excalidraw
       initialData={initial}
       excalidrawAPI={(a) => {
@@ -75,23 +102,35 @@ export function Editor() {
         setTimeout(() => a.scrollToContent(undefined, { fitToContent: true }), 100);
       }}
       onChange={onChange}
+      viewModeEnabled={mode === "view" || undefined}
       langCode="ru-RU"
       name={file}
     >
-      <MainMenu>
-        <MainMenu.Item onSelect={() => (location.href = "/")}>Все доски</MainMenu.Item>
-        <MainMenu.Separator />
-        <MainMenu.DefaultItems.SaveAsImage />
-        <MainMenu.Item onSelect={() => open(`/present?file=${encodeURIComponent(file)}`)}>
-          Показ
-        </MainMenu.Item>
-        <MainMenu.Item onSelect={() => open(`/api/pdf?file=${encodeURIComponent(file)}`)}>
-          Слайды в PDF
-        </MainMenu.Item>
-        <MainMenu.Separator />
-        <MainMenu.DefaultItems.ToggleTheme />
-        <MainMenu.DefaultItems.ChangeCanvasBackground />
-      </MainMenu>
+      {share ? (
+        // По ссылке — ни списка досок, ни показа, ни PDF: только эта доска.
+        <MainMenu>
+          <MainMenu.DefaultItems.SaveAsImage />
+          <MainMenu.Separator />
+          <MainMenu.DefaultItems.ToggleTheme />
+        </MainMenu>
+      ) : (
+        <MainMenu>
+          <MainMenu.Item onSelect={() => (location.href = "/")}>Все доски</MainMenu.Item>
+          <MainMenu.Item onSelect={() => setSharing(true)}>Поделиться ссылкой…</MainMenu.Item>
+          <MainMenu.Separator />
+          <MainMenu.DefaultItems.SaveAsImage />
+          <MainMenu.Item onSelect={() => open(`/present?file=${encodeURIComponent(file)}`)}>
+            Показ
+          </MainMenu.Item>
+          <MainMenu.Item onSelect={() => open(`/api/pdf?file=${encodeURIComponent(file)}`)}>
+            Слайды в PDF
+          </MainMenu.Item>
+          <MainMenu.Separator />
+          <MainMenu.DefaultItems.ToggleTheme />
+          <MainMenu.DefaultItems.ChangeCanvasBackground />
+        </MainMenu>
+      )}
     </Excalidraw>
-  );
+    {sharing && <ShareDialog file={file} onClose={() => setSharing(false)} />}
+  </>);
 }

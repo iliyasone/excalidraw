@@ -21,6 +21,24 @@ const authorized = (req) => {
   return Buffer.from(b64 || "", "base64").toString().split(":").slice(1).join(":") === password;
 };
 
+// Доступ по ссылке: data/shares.json — {токен: {file, mode: "view" | "edit", created}}.
+// У доски не больше одной ссылки; токен — 192 случайных бита, угадать его нельзя.
+const sharesFile = path.join(dataDir, "shares.json");
+const shares = new Map(fs.existsSync(sharesFile) ? Object.entries(JSON.parse(fs.readFileSync(sharesFile, "utf8"))) : []);
+// Сначала диск, потом память: если запись упала, ссылки остаются как были.
+const saveShares = (next) => {
+  fs.writeFileSync(sharesFile + ".tmp", JSON.stringify(Object.fromEntries(next), null, 2));
+  fs.renameSync(sharesFile + ".tmp", sharesFile);
+  shares.clear();
+  for (const [token, s] of next) shares.set(token, s);
+};
+const shareOf = (file) => [...shares].find(([, s]) => s.file === file);
+// Ссылка действует, пока она есть в shares и доска на месте.
+const liveShare = (token) => {
+  const s = token && shares.get(token);
+  return s && fs.existsSync(path.join(dataDir, s.file)) ? s : null;
+};
+
 const randomInt = () => crypto.randomInt(1, 2 ** 31);
 const randomId = () => crypto.randomBytes(16).toString("base64url").slice(0, 21);
 const byIndex = (a, b) => {
@@ -135,6 +153,15 @@ class Scene {
     }, 300);
   }
 
+  // Ссылку отозвали или поменяли ей права: вкладки, открытые по ней, перезагружаются.
+  dropShare(token) {
+    for (const c of this.clients) {
+      if (c.share !== token) continue;
+      c.res.end(`data: ${JSON.stringify({ type: "share-changed" })}\n\n`);
+      this.clients.delete(c);
+    }
+  }
+
   broadcast(msg, exceptClient) {
     const data = `data: ${JSON.stringify(msg)}\n\n`;
     for (const c of this.clients) if (!exceptClient || c.client !== exceptClient) c.res.write(data);
@@ -150,10 +177,15 @@ const sceneFor = (f) => {
 const fileParam = (u) => path.join(dataDir, path.basename(u.searchParams.get("file") || ""));
 const isScene = (f) => f.endsWith(".excalidraw");
 
-const readBody = (req) => new Promise((resolve, reject) => {
+const readBody = (req, limit = Infinity) => new Promise((resolve, reject) => {
   // Склеиваем буферы, а не строки: иначе символ UTF-8 на стыке чанков бьётся в «��».
   const chunks = [];
-  req.on("data", (c) => chunks.push(c));
+  let size = 0;
+  req.on("data", (c) => {
+    size += c.length;
+    if (size > limit) return reject(Object.assign(new Error("слишком большой запрос"), { status: 413 }));
+    chunks.push(c);
+  });
   req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
   req.on("error", reject);
 });
@@ -204,15 +236,101 @@ const json = (res, status, body) => {
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css",
   ".woff2": "font/woff2", ".json": "application/json", ".svg": "image/svg+xml" };
 
+// Файл сборки; index.html не кэшируем, иначе после пересборки браузер держит старый бандл;
+// файлы из assets/ и fonts/ с хэшем или неизменны — кэш на год.
+const distFile = (pathname) => {
+  const p = path.join(distDir, path.normalize(pathname));
+  return p.startsWith(distDir + path.sep) && fs.existsSync(p) && !fs.statSync(p).isDirectory() ? p : null;
+};
+const sendDist = (req, res, p, headers = {}) => sendFile(req, res, p, {
+  "Content-Type": types[path.extname(p)] || "application/octet-stream",
+  "Cache-Control": p.endsWith("index.html") ? "no-cache" : "private, max-age=31536000, immutable",
+  ...headers,
+});
+
+// Правка от гостя: только элементы и картинки той формы, которую merge, сортировка и /api/file
+// переварят; иначе один кривой запрос уронит сервер при сохранении.
+const plain = (x) => x !== null && typeof x === "object" && !Array.isArray(x);
+// Глубина вложенности: на слишком глубоком JSON.stringify падает с переполнением стека.
+// Рекурсия не глубже max + 1 уровней и без промежуточных массивов: память не растёт с шириной.
+const shallow = (x, max = 32) => {
+  if (x === null || typeof x !== "object") return true;
+  if (max < 0) return false;
+  if (Array.isArray(x)) { for (let i = 0; i < x.length; i++) if (!shallow(x[i], max - 1)) return false; }
+  else for (const k in x) if (!shallow(x[k], max - 1)) return false;
+  return true;
+};
+const validGuestBody = (b) => plain(b) && shallow(b)
+  && (b.elements === undefined || (Array.isArray(b.elements) && b.elements.every((e) => plain(e)
+    && typeof e.id === "string" && Number.isFinite(e.version) && Number.isFinite(e.versionNonce)
+    && (e.index == null || typeof e.index === "string"))))
+  && (b.files === undefined || (plain(b.files) && Object.values(b.files).every((f) => plain(f) && typeof f.dataURL === "string")));
+
+// Что можно по ссылке: читать доску, её картинки и поток правок; писать — только с правом "edit".
+const shareAllows = (u, req, share) => req.method === "GET"
+  ? ["/api/shared", "/api/scene", "/api/file", "/api/events"].includes(u.pathname)
+  : u.pathname === "/api/scene" && req.method === "POST" && share.mode === "edit";
+
 async function handle(req, res) {
+  // Адрес страницы (с токеном) не уходит чужим сайтам по ссылкам с доски.
+  res.setHeader("Referrer-Policy", "no-referrer");
   // Иконка открыта: браузер показывает её во вкладке ещё до ввода пароля.
   if (req.url === "/favicon.svg") return sendFile(req, res, path.join(distDir, "favicon.svg"), { "Content-Type": "image/svg+xml" });
-  if (!authorized(req)) {
-    return res.writeHead(401, { "WWW-Authenticate": 'Basic realm="excalidraw"' }).end();
-  }
   const u = new URL(req.url, "http://x");
-  const f = fileParam(u);
   const client = u.searchParams.get("client");
+
+  // Страница по ссылке /s/<токен> открывается без пароля; отозванная — 404.
+  const pageToken = /^\/s\/([\w-]+)$/.exec(u.pathname)?.[1];
+  if (pageToken) {
+    if (!liveShare(pageToken)) {
+      return send(req, res, 404, { "Content-Type": "text/html; charset=utf-8" },
+        Buffer.from('<!doctype html><meta charset="utf-8"><title>Excalidraw</title><p style="font:16px system-ui;padding:40px;color:#555">Ссылка не действует: доступ к доске закрыли.</p>'));
+    }
+    return sendDist(req, res, path.join(distDir, "index.html"), { "X-Robots-Tag": "noindex" });
+  }
+
+  // API по ссылке (?share=<токен>) видит только свою доску, что бы ни пришло в ?file.
+  let f, share = null;
+  if (u.searchParams.has("share")) {
+    share = liveShare(u.searchParams.get("share"));
+    if (!share) return json(res, 403, { error: "ссылка не действует" });
+    if (!shareAllows(u, req, share)) return json(res, 403, { error: "по ссылке это недоступно" });
+    f = path.join(dataDir, share.file);
+  } else if (!authorized(req)) {
+    // Без пароля отдаём только сборку (её видит и страница по ссылке): в ней нет данных.
+    const p = /^\/(assets|fonts)\//.test(u.pathname) && distFile(u.pathname);
+    if (p) return sendDist(req, res, p);
+    return res.writeHead(401, { "WWW-Authenticate": 'Basic realm="excalidraw"' }).end();
+  } else f = fileParam(u);
+
+  if (u.pathname === "/api/shared") return json(res, 200, { file: share.file, mode: share.mode });
+
+  // Ссылки досок (только с паролем). GET без file — все: {файл: {token, mode, created}}.
+  if (u.pathname === "/api/shares") {
+    if (!u.searchParams.has("file")) {
+      return json(res, 200, Object.fromEntries([...shares].map(([token, s]) => [s.file, { token, ...s }])));
+    }
+    const file = path.basename(f);
+    if (!isScene(f) || !fs.existsSync(f)) return json(res, 404, { error: "нет такой доски" });
+    const out = (entry) => json(res, 200, entry ? { token: entry[0], ...entry[1] } : null);
+    if (req.method === "GET") return out(shareOf(file));
+    if (req.method !== "POST" && req.method !== "DELETE") return json(res, 405, { error: "GET, POST или DELETE" });
+    const body = req.method === "POST" ? JSON.parse(await readBody(req)) : {};
+    // Дальше без await: два одновременных запроса не создадут доске две ссылки.
+    const cur = shareOf(file);
+    const mode = body.mode ? (body.mode === "edit" ? "edit" : "view") : cur?.[1].mode ?? "view";
+    if (cur && req.method === "POST" && !body.renew && mode === cur[1].mode) return out(cur);
+    // Старая запись уходит сразу: ссылка перестаёт работать, открытые по ней вкладки отключаются
+    // (при смене прав они перезагружаются и открываются уже с новыми).
+    const next = new Map(shares);
+    if (cur) next.delete(cur[0]);
+    // POST {mode, renew}: создать ссылку или сменить права (токен тот же); renew — новый токен.
+    const token = cur && !body.renew ? cur[0] : crypto.randomBytes(24).toString("base64url");
+    if (req.method === "POST") next.set(token, { file, mode, created: cur && !body.renew ? cur[1].created : Date.now() });
+    saveShares(next);
+    if (cur) scenes.get(f)?.dropShare(cur[0]);
+    return out(req.method === "POST" ? [token, shares.get(token)] : null);
+  }
 
   if (u.pathname === "/api/boards") {
     if (req.method === "POST") {
@@ -252,7 +370,10 @@ async function handle(req, res) {
       return send(req, res, 200, { "Content-Type": "application/json; charset=utf-8" }, Buffer.from(JSON.stringify(doc)));
     }
     // POST/PUT: элементы (целая сцена или только изменённые) — сливаем по версиям.
-    const body = JSON.parse(await readBody(req));
+    const body = JSON.parse(await readBody(req, share ? 50 * 2 ** 20 : Infinity));
+    // Пока тело шло, ссылку могли отозвать или лишить права правки.
+    if (share && liveShare(u.searchParams.get("share"))?.mode !== "edit") return json(res, 403, { error: "ссылка не действует" });
+    if (share && !validGuestBody(body)) return json(res, 400, { error: "неверные элементы" });
     const changed = scene.merge(body.elements, body.files);
     if (changed.elements.length || Object.keys(changed.files).length) scene.broadcast({ type: "elements", ...changed }, client);
     return json(res, 200, { merged: changed.elements.length });
@@ -263,7 +384,11 @@ async function handle(req, res) {
     const data = isScene(f) && fs.existsSync(f) && sceneFor(f).files[u.searchParams.get("id")];
     const m = data && /^data:([^;]+);base64,(.*)$/s.exec(data.dataURL);
     if (!m) return json(res, 404, { error: "нет файла" });
-    return send(req, res, 200, { "Content-Type": m[1], "Cache-Control": "private, max-age=31536000, immutable" }, Buffer.from(m[2], "base64"));
+    // Картинку мог загрузить гость по ссылке: как страница она не исполняется (sandbox, nosniff).
+    return send(req, res, 200, {
+      "Content-Type": m[1], "Cache-Control": "private, max-age=31536000, immutable",
+      "Content-Security-Policy": "sandbox", "X-Content-Type-Options": "nosniff",
+    }, Buffer.from(m[2], "base64"));
   }
 
   if (u.pathname === "/api/edit" && req.method === "POST") {
@@ -292,7 +417,7 @@ async function handle(req, res) {
     res.write(": ok\n\n");
     if (isScene(f) && fs.existsSync(f)) {
       const scene = sceneFor(f);
-      const c = { res, client };
+      const c = { res, client, share: share && u.searchParams.get("share") };
       scene.clients.add(c);
       req.on("close", () => scene.clients.delete(c));
       return;
@@ -309,13 +434,7 @@ async function handle(req, res) {
     return;
   }
 
-  let p = path.join(distDir, path.normalize(u.pathname));
-  if (!p.startsWith(distDir) || !fs.existsSync(p) || fs.statSync(p).isDirectory()) p = path.join(distDir, "index.html");
-  const headers = { "Content-Type": types[path.extname(p)] || "application/octet-stream" };
-  // index.html не кэшируем, иначе после пересборки браузер держит старый бандл;
-  // файлы из assets/ и fonts/ с хэшем или неизменны — кэш на год.
-  headers["Cache-Control"] = p.endsWith("index.html") ? "no-cache" : "private, max-age=31536000, immutable";
-  sendFile(req, res, p, headers);
+  sendDist(req, res, distFile(u.pathname) || path.join(distDir, "index.html"));
 }
 
 // Сжимаем сборку максимальным brotli в фоне: при старте и после каждой пересборки.
@@ -352,6 +471,6 @@ fs.watch(path.dirname(distDir), (_, name) => name === "dist" && scheduleWarm());
 for (const host of (process.env.HOSTS || "0.0.0.0").split(",")) {
   http.createServer((req, res) => handle(req, res).catch((e) => {
     console.error(e);
-    if (!res.headersSent) json(res, 500, { error: String(e.message || e) });
+    if (!res.headersSent) json(res, e.status || 500, { error: String(e.message || e) });
   })).listen(port, host, () => console.log(`http://${host}:${port}`));
 }

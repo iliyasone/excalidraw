@@ -41,6 +41,18 @@ All endpoints take `?file=<name>.excalidraw`.
 | `POST /api/edit` `{"add", "update", "delete"}` | Edits for scripts and agents: patches by id, new elements with defaults filled in |
 | `GET /api/events` | Server-Sent Events: `elements` with merged changes, `reload` after the file changed on disk |
 | `GET /api/pdf` | PDF of the board's deck |
+| `GET /api/shares` | The board's share link `{token, mode, created}` or `null`; without `file`, all of them by board |
+| `POST /api/shares` `{"mode", "renew"}` | Creates the link or changes its `mode` (`view` or `edit`); `renew: true` replaces the token |
+| `DELETE /api/shares` | Revokes the link |
+
+## Sharing a board by link
+
+"Поделиться ссылкой…" in the board menu gives the board a secret link `/s/<token>` (192 random
+bits), view-only or editable. It opens that board without the password and nothing else: the page
+calls the API with `?share=<token>` instead of `?file=`, the server takes the board from the token
+and allows only reading it, its images and live changes, plus merging edits when the link is
+editable. A board has at most one link; revoking or renewing it, or changing its mode, takes
+effect at once, and tabs opened by the old link reload. Links live in `data/shares.json`.
 
 `npm run pdf -- <file> [out.pdf] [--deck=<name>]` and `npm run shot -- <file> <slide> [out.png]`
 export from the command line. `skill/excalidraw/SKILL.md` is an agent skill describing all of

@@ -6,11 +6,13 @@ const boardUrl = (file, page = "/") => `${page}?file=${encodeURIComponent(file)}
 
 export function Home() {
   const [boards, setBoards] = useState(null);
+  const [shares, setShares] = useState({}); // доски, открытые по ссылке: {файл: {mode}}
   const [name, setName] = useState("");
   const [error, setError] = useState("");
 
   useEffect(() => {
     fetch("/api/boards").then((r) => r.json()).then(setBoards);
+    fetch("/api/shares").then((r) => r.json()).then(setShares);
   }, []);
 
   const create = async (e) => {
@@ -33,6 +35,8 @@ export function Home() {
         <div key={b.file} style={css.row}>
           <a href={boardUrl(b.file)} style={css.name}>{b.file.replace(/\.excalidraw$/, "")}</a>
           <span style={css.meta}>{b.slides ? `${b.slides} слайдов · ` : ""}{when(b.updated)}</span>
+          {shares[b.file] && <span style={css.shared} title="Доска открыта по ссылке; закрыть доступ — в меню доски">
+            по ссылке: {shares[b.file].mode === "edit" ? "правка" : "просмотр"}</span>}
           {b.slides > 0 && <a href={boardUrl(b.file, "/present")} style={css.link}>Показ</a>}
         </div>
       ))}
@@ -51,5 +55,6 @@ const css = {
   row: { display: "flex", alignItems: "baseline", gap: 12, padding: "12px 0", borderBottom: "1px solid #eee" },
   name: { flex: 1, color: "#1e1e1e", textDecoration: "none", fontWeight: 500 },
   meta: { color: "#888", fontSize: 13 },
+  shared: { color: "#2f9e44", fontSize: 13 },
   link: { color: "#6965db", textDecoration: "none" },
 };
