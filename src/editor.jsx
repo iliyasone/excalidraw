@@ -68,6 +68,13 @@ export function Editor({ file, mode = "edit" }) {
     };
     // Поток закрылся насовсем (сервер ответил 403 — ссылку отозвали): перезагрузка покажет это.
     es.onerror = () => share && es.readyState === EventSource.CLOSED && location.reload();
+    // После обрыва поток переподключается сам; права за это время могли смениться.
+    let opened = false;
+    es.onopen = async () => {
+      if (!share || !opened) return void (opened = true);
+      const r = await fetch(`/api/shared?${boardQuery(file)}`);
+      if (!r.ok || (await r.json()).mode !== mode) location.reload();
+    };
     return () => es.close();
   }, []);
 

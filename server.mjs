@@ -248,6 +248,15 @@ const sendDist = (req, res, p, headers = {}) => sendFile(req, res, p, {
   ...headers,
 });
 
+// Правка от гостя: только элементы и картинки той формы, которую merge, сортировка и /api/file
+// переварят; иначе один кривой запрос уронит сервер при сохранении.
+const plain = (x) => x !== null && typeof x === "object" && !Array.isArray(x);
+const validGuestBody = (b) => plain(b)
+  && (b.elements === undefined || (Array.isArray(b.elements) && b.elements.every((e) => plain(e)
+    && typeof e.id === "string" && Number.isFinite(e.version) && Number.isFinite(e.versionNonce)
+    && (e.index == null || typeof e.index === "string"))))
+  && (b.files === undefined || (plain(b.files) && Object.values(b.files).every((f) => plain(f) && typeof f.dataURL === "string")));
+
 // Что можно по ссылке: читать доску, её картинки и поток правок; писать — только с правом "edit".
 const shareAllows = (u, req, share) => req.method === "GET"
   ? ["/api/shared", "/api/scene", "/api/file", "/api/events"].includes(u.pathname)
@@ -355,6 +364,7 @@ async function handle(req, res) {
     const body = JSON.parse(await readBody(req, share ? 50 * 2 ** 20 : Infinity));
     // Пока тело шло, ссылку могли отозвать или лишить права правки.
     if (share && liveShare(u.searchParams.get("share"))?.mode !== "edit") return json(res, 403, { error: "ссылка не действует" });
+    if (share && !validGuestBody(body)) return json(res, 400, { error: "неверные элементы" });
     const changed = scene.merge(body.elements, body.files);
     if (changed.elements.length || Object.keys(changed.files).length) scene.broadcast({ type: "elements", ...changed }, client);
     return json(res, 200, { merged: changed.elements.length });
