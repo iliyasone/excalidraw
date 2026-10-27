@@ -25,9 +25,12 @@ const authorized = (req) => {
 // У доски не больше одной ссылки; токен — 192 случайных бита, угадать его нельзя.
 const sharesFile = path.join(dataDir, "shares.json");
 const shares = new Map(fs.existsSync(sharesFile) ? Object.entries(JSON.parse(fs.readFileSync(sharesFile, "utf8"))) : []);
-const saveShares = () => {
-  fs.writeFileSync(sharesFile + ".tmp", JSON.stringify(Object.fromEntries(shares), null, 2));
+// Сначала диск, потом память: если запись упала, ссылки остаются как были.
+const saveShares = (next) => {
+  fs.writeFileSync(sharesFile + ".tmp", JSON.stringify(Object.fromEntries(next), null, 2));
   fs.renameSync(sharesFile + ".tmp", sharesFile);
+  shares.clear();
+  for (const [token, s] of next) shares.set(token, s);
 };
 const shareOf = (file) => [...shares].find(([, s]) => s.file === file);
 // Ссылка действует, пока она есть в shares и доска на месте.
@@ -291,25 +294,24 @@ async function handle(req, res) {
     }
     const file = path.basename(f);
     if (!isScene(f) || !fs.existsSync(f)) return json(res, 404, { error: "нет такой доски" });
-    const cur = shareOf(file);
     const out = (entry) => json(res, 200, entry ? { token: entry[0], ...entry[1] } : null);
-    if (req.method === "GET") return out(cur);
+    if (req.method === "GET") return out(shareOf(file));
     if (req.method !== "POST" && req.method !== "DELETE") return json(res, 405, { error: "GET, POST или DELETE" });
     const body = req.method === "POST" ? JSON.parse(await readBody(req)) : {};
+    // Дальше без await: два одновременных запроса не создадут доске две ссылки.
+    const cur = shareOf(file);
     const mode = body.mode ? (body.mode === "edit" ? "edit" : "view") : cur?.[1].mode ?? "view";
     if (cur && req.method === "POST" && !body.renew && mode === cur[1].mode) return out(cur);
     // Старая запись уходит сразу: ссылка перестаёт работать, открытые по ней вкладки отключаются
     // (при смене прав они перезагружаются и открываются уже с новыми).
-    if (cur) {
-      shares.delete(cur[0]);
-      scenes.get(f)?.dropShare(cur[0]);
-    }
-    if (req.method === "DELETE") { saveShares(); return out(null); }
+    const next = new Map(shares);
+    if (cur) next.delete(cur[0]);
     // POST {mode, renew}: создать ссылку или сменить права (токен тот же); renew — новый токен.
     const token = cur && !body.renew ? cur[0] : crypto.randomBytes(24).toString("base64url");
-    shares.set(token, { file, mode, created: cur && !body.renew ? cur[1].created : Date.now() });
-    saveShares();
-    return out([token, shares.get(token)]);
+    if (req.method === "POST") next.set(token, { file, mode, created: cur && !body.renew ? cur[1].created : Date.now() });
+    saveShares(next);
+    if (cur) scenes.get(f)?.dropShare(cur[0]);
+    return out(req.method === "POST" ? [token, shares.get(token)] : null);
   }
 
   if (u.pathname === "/api/boards") {
@@ -351,6 +353,8 @@ async function handle(req, res) {
     }
     // POST/PUT: элементы (целая сцена или только изменённые) — сливаем по версиям.
     const body = JSON.parse(await readBody(req, share ? 50 * 2 ** 20 : Infinity));
+    // Пока тело шло, ссылку могли отозвать или лишить права правки.
+    if (share && liveShare(u.searchParams.get("share"))?.mode !== "edit") return json(res, 403, { error: "ссылка не действует" });
     const changed = scene.merge(body.elements, body.files);
     if (changed.elements.length || Object.keys(changed.files).length) scene.broadcast({ type: "elements", ...changed }, client);
     return json(res, 200, { merged: changed.elements.length });
@@ -361,7 +365,11 @@ async function handle(req, res) {
     const data = isScene(f) && fs.existsSync(f) && sceneFor(f).files[u.searchParams.get("id")];
     const m = data && /^data:([^;]+);base64,(.*)$/s.exec(data.dataURL);
     if (!m) return json(res, 404, { error: "нет файла" });
-    return send(req, res, 200, { "Content-Type": m[1], "Cache-Control": "private, max-age=31536000, immutable" }, Buffer.from(m[2], "base64"));
+    // Картинку мог загрузить гость по ссылке: как страница она не исполняется (sandbox, nosniff).
+    return send(req, res, 200, {
+      "Content-Type": m[1], "Cache-Control": "private, max-age=31536000, immutable",
+      "Content-Security-Policy": "sandbox", "X-Content-Type-Options": "nosniff",
+    }, Buffer.from(m[2], "base64"));
   }
 
   if (u.pathname === "/api/edit" && req.method === "POST") {
