@@ -251,17 +251,13 @@ const sendDist = (req, res, p, headers = {}) => sendFile(req, res, p, {
 // Правка от гостя: только элементы и картинки той формы, которую merge, сортировка и /api/file
 // переварят; иначе один кривой запрос уронит сервер при сохранении.
 const plain = (x) => x !== null && typeof x === "object" && !Array.isArray(x);
-// Глубина вложенности без рекурсии: на слишком глубоком JSON.stringify падает с переполнением стека.
-const shallow = (root, max = 32) => {
-  const stack = [[root, 0]];
-  const isObj = (v) => v !== null && typeof v === "object";
-  while (stack.length) {
-    const [x, d] = stack.pop();
-    if (d > max) return false;
-    // В стек — только объекты и массивы; числа и строки (их в большом массиве миллионы) пропускаем на месте.
-    if (Array.isArray(x)) { for (let i = 0; i < x.length; i++) if (isObj(x[i])) stack.push([x[i], d + 1]); }
-    else for (const k in x) if (isObj(x[k])) stack.push([x[k], d + 1]);
-  }
+// Глубина вложенности: на слишком глубоком JSON.stringify падает с переполнением стека.
+// Рекурсия не глубже max + 1 уровней и без промежуточных массивов: память не растёт с шириной.
+const shallow = (x, max = 32) => {
+  if (x === null || typeof x !== "object") return true;
+  if (max < 0) return false;
+  if (Array.isArray(x)) { for (let i = 0; i < x.length; i++) if (!shallow(x[i], max - 1)) return false; }
+  else for (const k in x) if (!shallow(x[k], max - 1)) return false;
   return true;
 };
 const validGuestBody = (b) => plain(b) && shallow(b)
