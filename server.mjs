@@ -254,11 +254,13 @@ const plain = (x) => x !== null && typeof x === "object" && !Array.isArray(x);
 // Глубина вложенности без рекурсии: на слишком глубоком JSON.stringify падает с переполнением стека.
 const shallow = (root, max = 32) => {
   const stack = [[root, 0]];
+  const isObj = (v) => v !== null && typeof v === "object";
   while (stack.length) {
     const [x, d] = stack.pop();
-    if (x === null || typeof x !== "object") continue;
     if (d > max) return false;
-    for (const v of Object.values(x)) stack.push([v, d + 1]);
+    // В стек — только объекты и массивы; числа и строки (их в большом массиве миллионы) пропускаем на месте.
+    if (Array.isArray(x)) { for (let i = 0; i < x.length; i++) if (isObj(x[i])) stack.push([x[i], d + 1]); }
+    else for (const k in x) if (isObj(x[k])) stack.push([x[k], d + 1]);
   }
   return true;
 };
