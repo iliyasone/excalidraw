@@ -15,8 +15,10 @@ about changing the server and the frontend.
   the token's board (`shareAllows` in `server.mjs` lists what they may do); tokens are in
   `data/shares.json`. `src/access.js` builds the board part of API URLs for both modes,
   `src/share.jsx` is the owner's dialog.
-- `src/present.jsx`: presenter view; `src/home.jsx`: board list; `src/deck.js`: slide order and
-  decks, shared by the browser and the export scripts.
+- `src/present.jsx`: presenter view; `src/home.jsx`: board list (previews, search, pinned boards,
+  card menu); `src/thumbs.js`: previews drawn by Excalidraw in the browser and stored in
+  `data/.thumbs`; `src/ui.css` and `src/theme.js`: styles and the light/dark/system theme shared by
+  every page; `src/deck.js`: slide order and decks, shared by the browser and the export scripts.
 - `scripts/`: PDF and PNG export through headless Chromium (Playwright) that opens the real
   editor and calls `exportToSvg`.
 

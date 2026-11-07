@@ -1,5 +1,8 @@
-// Окно «Поделиться ссылкой»: включить доступ к доске по ссылке, выбрать права, сменить или закрыть ссылку.
-import { useEffect, useState } from "react";
+// Окна в стиле списка досок: общая рамка Dialog и «Доступ по ссылке» (включить, выбрать права,
+// сменить или закрыть ссылку). ShareDialog открывается и из списка досок, и из меню редактора.
+import { useEffect, useRef, useState } from "react";
+import "./ui.css";
+import { Icon } from "./icons.jsx";
 
 const api = (file, method = "GET", body) =>
   fetch(`/api/shares?file=${encodeURIComponent(file)}`, { method, body: body && JSON.stringify(body) })
@@ -7,21 +10,87 @@ const api = (file, method = "GET", body) =>
 
 export const shareUrl = (token) => `${location.origin}/s/${token}`;
 
-export function ShareDialog({ file, onClose }) {
-  const [link, setLink] = useState(); // undefined — грузится, null — доступа по ссылке нет
-  const [busy, setBusy] = useState(false);
-  const [copied, setCopied] = useState(false);
-
-  useEffect(() => { api(file).then(setLink, () => setLink(null)); }, [file]);
+export function Dialog({ onClose, label, wide, children }) {
   useEffect(() => {
     const onKey = (e) => e.key === "Escape" && onClose();
     addEventListener("keydown", onKey);
     return () => removeEventListener("keydown", onKey);
   }, []);
+  return (
+    <div className="ui backdrop" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className={`dialog${wide ? " wide" : ""}`} role="dialog" aria-modal="true" aria-label={label}>
+        {children}
+        <button className="btn btn-ghost icon-btn close" onClick={onClose} aria-label="Закрыть"><Icon name="x" /></button>
+      </div>
+    </div>
+  );
+}
+
+// Окно «Новая доска»; пустое имя можно — сервер назовёт доску «Без названия <дата>».
+export function NameDialog({ title: heading, action, initial, onSubmit, onClose }) {
+  const [name, setName] = useState(initial);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    try { await onSubmit(name.trim()); } catch (err) { setError(err.message); setBusy(false); }
+  };
+  return (
+    <Dialog onClose={onClose} label={heading}>
+      <form onSubmit={submit}>
+        <h2>{heading}</h2>
+        <label className="field" htmlFor="board-name" style={{ marginTop: 16 }}>Название</label>
+        <input id="board-name" className="input" autoFocus value={name} placeholder="Без названия"
+          onFocus={(e) => e.target.select()} onChange={(e) => { setName(e.target.value); setError(""); }} />
+        {error && <div className="error">{error[0].toUpperCase() + error.slice(1)}</div>}
+        <div className="buttons">
+          <button type="button" className="btn btn-secondary" onClick={onClose}>Отмена</button>
+          <button className="btn btn-primary" disabled={busy}>{action}</button>
+        </div>
+      </form>
+    </Dialog>
+  );
+}
+
+// Имя доски, которое правят прямо на месте (карточка, шапка редактора): Enter или уход из поля —
+// сохранить, Esc — отменить. onDone(новый файл или null).
+export function InlineName({ file, onDone, onError, className = "" }) {
+  const initial = file.replace(/\.excalidraw$/, "");
+  const [name, setName] = useState(initial);
+  const done = useRef(false);
+  const save = async () => {
+    if (done.current) return;
+    done.current = true;
+    if (!name.trim() || name.trim() === initial) return onDone(null);
+    const r = await fetch(`/api/boards?file=${encodeURIComponent(file)}`, { method: "PATCH", body: JSON.stringify({ name: name.trim() }) });
+    const out = await r.json().catch(() => ({}));
+    if (!r.ok) onError?.(out.error ? out.error[0].toUpperCase() + out.error.slice(1) : "Не получилось переименовать");
+    onDone(r.ok ? out.file : null);
+  };
+  return (
+    <input className={`inline-name ${className}`} autoFocus value={name} aria-label="Название доски"
+      onFocus={(e) => e.target.select()} onChange={(e) => setName(e.target.value)} onBlur={save}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") e.target.blur();
+        if (e.key === "Escape") { done.current = true; onDone(null); }
+        e.stopPropagation();
+      }} />
+  );
+}
+
+export function ShareDialog({ file, onClose }) {
+  const [link, setLink] = useState(); // undefined — грузится, null — доступа по ссылке нет
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [renewing, setRenewing] = useState(false); // спрашиваем, точно ли менять ссылку
+
+  useEffect(() => { api(file).then(setLink, () => setLink(null)); }, [file]);
 
   const run = (method, body) => async () => {
     setBusy(true);
     setCopied(false);
+    setRenewing(false);
     try { setLink(await api(file, method, body)); } catch (e) { alert(`Не получилось: ${e.message}`); }
     setBusy(false);
   };
@@ -31,57 +100,59 @@ export function ShareDialog({ file, onClose }) {
   };
 
   return (
-    <div style={css.backdrop} onClick={onClose}>
-      <div style={css.box} onClick={(e) => e.stopPropagation()}>
-        <h2 style={css.h2}>Доступ по ссылке</h2>
-        {link === undefined ? null : !link ? (
-          <>
-            <p style={css.text}>Сейчас доску видите только вы. Ссылка откроет её без пароля любому, у кого она есть;
-              другие доски и их список по ней не видны.</p>
-            <div style={css.buttons}>
-              <button disabled={busy} style={css.primary} onClick={run("POST", { mode: "view" })}>Ссылка для просмотра</button>
-              <button disabled={busy} style={css.primary} onClick={run("POST", { mode: "edit" })}>Ссылка для правки</button>
+    <Dialog onClose={onClose} label="Поделиться" wide>
+      <h2>Поделиться</h2>
+      <p style={{ marginBottom: 4 }}>«{file.replace(/\.excalidraw$/, "")}»</p>
+      {link !== undefined && (
+        <>
+          <div className="share-row">
+            <div>
+              <b>Открыть по ссылке</b>
+              <small>{link ? "Любой, у кого есть ссылка, откроет эту доску без пароля" : "Сейчас доску видите только вы"}</small>
             </div>
-          </>
-        ) : (
-          <>
-            <p style={css.text}>Любой, у кого есть ссылка, откроет эту доску без пароля. Другие доски и их список ему не видны.</p>
-            <div style={css.buttons}>
-              <input readOnly value={shareUrl(link.token)} style={css.input} onFocus={(e) => e.target.select()} />
-              <button style={css.primary} onClick={copy}>{copied ? "Скопировано" : "Копировать"}</button>
-            </div>
-            <div style={css.modes}>
-              {[["view", "Только просмотр"], ["edit", "Может редактировать"]].map(([m, label]) => (
-                <label key={m} style={css.mode}>
-                  <input type="radio" checked={link.mode === m} disabled={busy} onChange={run("POST", { mode: m })} /> {label}
-                </label>
-              ))}
-            </div>
-            <div style={css.buttons}>
-              <button disabled={busy} style={css.secondary} onClick={run("POST", { renew: true })}
-                title="Старая ссылка перестанет работать">Новая ссылка</button>
-              <button disabled={busy} style={{ ...css.secondary, color: "#c92a2a" }} onClick={run("DELETE")}>Закрыть доступ</button>
-            </div>
-            <p style={css.hint}>«Новая ссылка» и «Закрыть доступ» отключают старую ссылку сразу, в том числе у тех, у кого доска уже открыта.</p>
-          </>
-        )}
-        <button style={css.close} onClick={onClose} aria-label="Закрыть">×</button>
-      </div>
-    </div>
+            <button className="toggle" role="switch" aria-checked={!!link} aria-label="Открыть по ссылке" disabled={busy}
+              onClick={link ? run("DELETE") : run("POST", { mode: "view" })} />
+          </div>
+          {link && (
+            <>
+              <div className="link-box">
+                <span className="link-text" title={shareUrl(link.token)}>{shareUrl(link.token)}</span>
+                <button className="btn btn-ghost icon-btn" onClick={copy} title={copied ? "Скопировано" : "Копировать ссылку"} aria-label="Копировать ссылку">
+                  <Icon name={copied ? "check" : "copy"} size={17} />
+                </button>
+              </div>
+              {copied && <div className="copied" role="status"><Icon name="check" size={15} />Ссылка скопирована</div>}
+              {renewing && (
+                <div className="renew">
+                  <span>Выпустить новую ссылку? Старая перестанет работать.</span>
+                  <button className="btn btn-ghost" onClick={() => setRenewing(false)}>Отмена</button>
+                  <button className="btn btn-danger" disabled={busy} onClick={run("POST", { renew: true })}>Выпустить</button>
+                </div>
+              )}
+              <div className="share-row mode-row" style={{ borderTop: 0, paddingTop: 0 }}>
+                <b>По ссылке можно</b>
+                <div className="seg" role="group" aria-label="Права по ссылке">
+                  {[["view", "eye", "Смотреть"], ["edit", "pencil", "Редактировать"]].map(([m, icon, label]) => (
+                    <button key={m} aria-pressed={link.mode === m} disabled={busy} onClick={run("POST", { mode: m })}>
+                      <Icon name={icon} size={15} />{label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {!renewing && (
+                <div className="share-row renew-row">
+                  <div>
+                    <b>Выпустить новую ссылку</b>
+                    <small>Старая перестанет работать сразу, даже в открытых вкладках</small>
+                  </div>
+                  <button className="btn btn-secondary" onClick={() => setRenewing(true)} disabled={busy}><Icon name="renew" size={16} />Выпустить</button>
+                </div>
+              )}
+              <div className="hint">Другие доски и их список по ссылке не видны.</div>
+            </>
+          )}
+        </>
+      )}
+    </Dialog>
   );
 }
-
-const css = {
-  backdrop: { position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,.3)", display: "flex", alignItems: "center", justifyContent: "center", font: "14px system-ui", color: "#1e1e1e" },
-  box: { position: "relative", width: 520, maxWidth: "calc(100vw - 32px)", background: "#fff", borderRadius: 12, padding: "20px 24px", boxShadow: "0 8px 32px rgba(0,0,0,.2)" },
-  h2: { font: "600 18px system-ui", margin: "0 0 12px" },
-  text: { margin: "0 0 14px", lineHeight: 1.45 },
-  hint: { margin: "12px 0 0", color: "#888", fontSize: 12, lineHeight: 1.4 },
-  buttons: { display: "flex", gap: 8, marginTop: 10 },
-  input: { flex: 1, minWidth: 0, font: "13px ui-monospace, monospace", padding: "8px 10px", border: "1px solid #ccc", borderRadius: 8 },
-  primary: { font: "inherit", padding: "8px 14px", border: 0, borderRadius: 8, background: "#6965db", color: "#fff", cursor: "pointer" },
-  secondary: { font: "inherit", padding: "8px 14px", border: "1px solid #ddd", borderRadius: 8, background: "#fff", color: "#1e1e1e", cursor: "pointer" },
-  modes: { display: "flex", gap: 20, margin: "14px 0 4px" },
-  mode: { display: "flex", alignItems: "center", gap: 6, cursor: "pointer" },
-  close: { position: "absolute", top: 10, right: 14, border: 0, background: "none", font: "22px system-ui", color: "#888", cursor: "pointer" },
-};
