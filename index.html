@@ -5,8 +5,21 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Excalidraw</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-<script>window.EXCALIDRAW_ASSET_PATH = "/";</script>
-<style>html,body,#root{margin:0;height:100%;}</style>
+<script>
+window.EXCALIDRAW_ASSET_PATH = "/";
+// Тема до первой отрисовки (подробности — src/theme.js).
+(function () {
+  var c = "system";
+  try { c = localStorage.getItem("theme") || c; } catch (e) {}
+  if (c === "system") c = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  document.documentElement.dataset.theme = c;
+})();
+</script>
+<style>
+html,body,#root{margin:0;height:100%;}
+body{background:#fff;color-scheme:light;}
+[data-theme=dark] body{background:#121212;color-scheme:dark;}
+</style>
 </head>
 <body><div id="root"></div><script type="module" src="/src/main.jsx"></script></body>
 </html>

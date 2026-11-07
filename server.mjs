@@ -39,6 +39,14 @@ const liveShare = (token) => {
   return s && fs.existsSync(path.join(dataDir, s.file)) ? s : null;
 };
 
+// Закреплённые доски (наверху списка): data/pins.json — массив имён файлов.
+const pinsFile = path.join(dataDir, "pins.json");
+const readPins = () => (fs.existsSync(pinsFile) ? JSON.parse(fs.readFileSync(pinsFile, "utf8")) : []);
+const savePins = (pins) => {
+  fs.writeFileSync(pinsFile + ".tmp", JSON.stringify(pins));
+  fs.renameSync(pinsFile + ".tmp", pinsFile);
+};
+
 const randomInt = () => crypto.randomInt(1, 2 ** 31);
 const randomId = () => crypto.randomBytes(16).toString("base64url").slice(0, 21);
 const byIndex = (a, b) => {
@@ -73,8 +81,8 @@ class Scene {
     this.clients = new Set(); // {res, client}
     this.load();
     // Файл поправили руками (не через сервер) — перечитываем и перезагружаем вкладки.
-    setInterval(() => {
-      if (!fs.existsSync(file) || hash(fs.readFileSync(file)) === this.diskHash) return;
+    this.watch = setInterval(() => {
+      if (!fs.existsSync(this.file) || hash(fs.readFileSync(this.file)) === this.diskHash) return;
       this.load();
       this.broadcast({ type: "reload" });
     }, 1000);
@@ -145,12 +153,25 @@ class Scene {
 
   persist() {
     clearTimeout(this.saveTimer);
-    this.saveTimer = setTimeout(() => {
-      const text = JSON.stringify(this.toJSON());
-      fs.writeFileSync(this.file + ".tmp", text);
-      fs.renameSync(this.file + ".tmp", this.file);
-      this.diskHash = hash(text);
-    }, 300);
+    this.saveTimer = setTimeout(() => this.save(), 300);
+  }
+
+  save() {
+    clearTimeout(this.saveTimer);
+    this.saveTimer = null;
+    const text = JSON.stringify(this.toJSON());
+    fs.writeFileSync(this.file + ".tmp", text);
+    fs.renameSync(this.file + ".tmp", this.file);
+    this.diskHash = hash(text);
+  }
+
+  // Доску переименовали или удалили: недописанное — на диск, открытым вкладкам — куда она делась.
+  close(msg) {
+    if (this.saveTimer) this.save();
+    clearInterval(this.watch);
+    this.broadcast(msg);
+    for (const c of this.clients) c.res.end();
+    this.clients.clear();
   }
 
   // Ссылку отозвали или поменяли ей права: вкладки, открытые по ней, перезагружаются.
@@ -176,8 +197,11 @@ const sceneFor = (f) => {
 
 const fileParam = (u) => path.join(dataDir, path.basename(u.searchParams.get("file") || ""));
 const isScene = (f) => f.endsWith(".excalidraw");
+const boardName = (name) => String(name || "").replace(/[\/\\:*?"<>|]/g, " ").replace(/\s+/g, " ").trim().slice(0, 120);
+// Превью: светлое и тёмное (тёмное рисует сам Excalidraw, картинки на доске не инвертируются).
+const thumbPath = (file, dark) => path.join(dataDir, ".thumbs", file + (dark ? ".dark" : "") + ".png");
 
-const readBody = (req, limit = Infinity) => new Promise((resolve, reject) => {
+const readBody = (req, limit = Infinity, raw = false) => new Promise((resolve, reject) => {
   // Склеиваем буферы, а не строки: иначе символ UTF-8 на стыке чанков бьётся в «��».
   const chunks = [];
   let size = 0;
@@ -186,7 +210,7 @@ const readBody = (req, limit = Infinity) => new Promise((resolve, reject) => {
     if (size > limit) return reject(Object.assign(new Error("слишком большой запрос"), { status: 413 }));
     chunks.push(c);
   });
-  req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+  req.on("end", () => resolve(raw ? Buffer.concat(chunks) : Buffer.concat(chunks).toString("utf8")));
   req.on("error", reject);
 });
 
@@ -335,22 +359,102 @@ async function handle(req, res) {
   if (u.pathname === "/api/boards") {
     if (req.method === "POST") {
       // Новая доска: имя файла = имя доски без символов, недопустимых в пути.
-      const { name } = JSON.parse(await readBody(req));
-      const base = String(name || "").replace(/[\/\\:*?"<>|]/g, " ").trim();
+      // {name} — пустая; {name, scene} — импорт файла; {name, from} — копия доски from.
+      const body = JSON.parse(await readBody(req));
+      // Без имени — «Без названия <дата>», как у Excalidraw+.
+      const base = boardName(body.name) || (body.from || body.scene ? "" : `Без названия ${new Date().toISOString().slice(0, 10)}`);
       if (!base) return json(res, 400, { error: "нужно имя" });
-      const file = base + ".excalidraw";
-      const p = path.join(dataDir, file);
-      if (fs.existsSync(p)) return json(res, 409, { error: "такая доска уже есть", file });
-      fs.writeFileSync(p, JSON.stringify({ type: "excalidraw", version: 2, source: "excalidraw-self-hosted", elements: [], appState: { viewBackgroundColor: "#ffffff" }, files: {} }));
+      let doc = { type: "excalidraw", version: 2, source: "excalidraw-self-hosted", elements: [], appState: { viewBackgroundColor: "#ffffff" }, files: {} };
+      if (body.from) {
+        const src = path.join(dataDir, path.basename(body.from));
+        if (!isScene(src) || !fs.existsSync(src)) return json(res, 404, { error: "нет такой доски" });
+        doc = scenes.has(src) ? scenes.get(src).toJSON() : JSON.parse(fs.readFileSync(src, "utf8"));
+      } else if (body.scene) {
+        if (!Array.isArray(body.scene.elements)) return json(res, 400, { error: "это не файл Excalidraw" });
+        doc = { ...doc, ...body.scene, files: body.scene.files || {} };
+      }
+      // Импорт и копия берут свободное имя («Имя (2)»), новая пустая доска с занятым именем — ошибка.
+      let file = base + ".excalidraw";
+      if (body.from || body.scene || !body.name) for (let n = 2; fs.existsSync(path.join(dataDir, file)); n++) file = `${base} (${n}).excalidraw`;
+      else if (fs.existsSync(path.join(dataDir, file))) return json(res, 409, { error: "доска с таким именем уже есть", file });
+      fs.writeFileSync(path.join(dataDir, file), JSON.stringify(doc));
       return json(res, 201, { file });
     }
-    const boards = fs.readdirSync(dataDir).filter(isScene).map((file) => {
+    if (req.method === "PATCH" || req.method === "DELETE") {
+      if (!isScene(f) || !fs.existsSync(f)) return json(res, 404, { error: "нет такой доски" });
+      const file = path.basename(f);
+      let to;
+      if (req.method === "PATCH") {
+        const body = JSON.parse(await readBody(req));
+        // {pinned} — закрепить или открепить.
+        if ("pinned" in body) {
+          const pins = readPins().filter((p) => p !== file);
+          savePins(body.pinned ? [file, ...pins] : pins);
+          return json(res, 200, { file, pinned: !!body.pinned });
+        }
+        // {name} — переименование: файл доски, её превью и колоды (<имя>.deck.json, <имя>.<колода>.deck.json).
+        const base = boardName(body.name);
+        if (!base) return json(res, 400, { error: "нужно имя" });
+        to = path.join(dataDir, base + ".excalidraw");
+        if (to === f) return json(res, 200, { file });
+        if (fs.existsSync(to)) return json(res, 409, { error: "доска с таким именем уже есть" });
+      } else {
+        // Удаление: доска уходит в data/backups/deleted, оттуда её можно вернуть.
+        fs.mkdirSync(path.join(dataDir, "backups", "deleted"), { recursive: true });
+        to = path.join(dataDir, "backups", "deleted", `${file.replace(/\.excalidraw$/, "")} ${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.excalidraw`);
+      }
+      const newFile = req.method === "PATCH" ? path.basename(to) : null;
+      scenes.get(f)?.close({ type: newFile ? "renamed" : "deleted", file: newFile });
+      scenes.delete(f);
+      fs.renameSync(f, to);
+      fs.rmSync(thumbPath(file), { force: true });
+      fs.rmSync(thumbPath(file, true), { force: true });
+      if (readPins().includes(file)) savePins(readPins().flatMap((p) => (p !== file ? [p] : newFile ? [newFile] : [])));
+      const cur = shareOf(file);
+      if (cur) {
+        const next = new Map(shares);
+        if (newFile) next.set(cur[0], { ...cur[1], file: newFile });
+        else next.delete(cur[0]);
+        saveShares(next);
+      }
+      if (newFile) {
+        const oldBase = file.replace(/\.excalidraw$/, ""), newBase = newFile.replace(/\.excalidraw$/, "");
+        for (const d of fs.readdirSync(dataDir)) {
+          if (d === `${oldBase}.deck.json` || (d.startsWith(oldBase + ".") && d.endsWith(".deck.json") && !d.slice(oldBase.length + 1, -10).includes("."))) {
+            fs.renameSync(path.join(dataDir, d), path.join(dataDir, newBase + d.slice(oldBase.length)));
+          }
+        }
+      }
+      return json(res, 200, { file: newFile });
+    }
+    const pins = readPins();
+    // ?file= — только эта доска (редактору нужно знать, закреплена ли она и есть ли слайды).
+    const only = u.searchParams.get("file");
+    const boards = fs.readdirSync(dataDir).filter((file) => isScene(file) && (!only || file === path.basename(only))).map((file) => {
       const p = path.join(dataDir, file);
       const elements = scenes.has(p) ? [...scenes.get(p).elements.values()] : JSON.parse(fs.readFileSync(p, "utf8")).elements;
       const live = elements.filter((e) => !e.isDeleted);
-      return { file, slides: live.filter((e) => e.type === "frame").length, elements: live.length, updated: fs.statSync(p).mtimeMs };
+      let thumb = 0;
+      try { thumb = fs.statSync(thumbPath(file)).mtimeMs; } catch {}
+      return { file, slides: live.filter((e) => e.type === "frame").length, elements: live.length, updated: fs.statSync(p).mtimeMs, thumb, pinned: pins.includes(file) };
     });
     return json(res, 200, boards.sort((a, b) => b.updated - a.updated));
+  }
+
+  // Превью доски для списка: PNG рисует браузер (тем же Excalidraw) и присылает сюда.
+  if (u.pathname === "/api/thumb") {
+    if (!isScene(f) || !fs.existsSync(f)) return json(res, 404, { error: "нет такой доски" });
+    const p = thumbPath(path.basename(f), u.searchParams.get("theme") === "dark");
+    if (req.method === "POST") {
+      const body = Buffer.from(await readBody(req, 4 * 2 ** 20, true));
+      if (body.subarray(1, 4).toString() !== "PNG") return json(res, 400, { error: "нужен PNG" });
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p + ".tmp", body);
+      fs.renameSync(p + ".tmp", p);
+      return json(res, 200, { thumb: fs.statSync(p).mtimeMs });
+    }
+    if (!fs.existsSync(p)) return json(res, 404, { error: "превью ещё нет" });
+    return sendFile(req, res, p, { "Content-Type": "image/png", "Cache-Control": "private, max-age=31536000, immutable" });
   }
 
   if (u.pathname === "/api/scene") {

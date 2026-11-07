@@ -33,8 +33,11 @@ All endpoints take `?file=<name>.excalidraw`.
 
 | Request | What it does |
 | --- | --- |
-| `GET /api/boards` | Boards with slide count and last change |
-| `POST /api/boards` `{"name"}` | Creates an empty board |
+| `GET /api/boards` | Boards with slide count, last change, preview time and pinned flag; with `file`, only that board |
+| `POST /api/boards` `{"name", "scene"?, "from"?}` | Creates a board: empty (no name gives "Без названия <date>"), imported from `scene`, or a copy of board `from` |
+| `PATCH /api/boards` `{"name"}` or `{"pinned"}` | Renames the board (with its decks, share link and pin) or pins it to the top of the list |
+| `DELETE /api/boards` | Moves the board to `data/backups/deleted` and revokes its share link |
+| `GET /api/thumb` (`&theme=dark`) | Board preview PNG; `POST` stores one (the board list draws missing previews in the browser) |
 | `GET /api/scene` | Full scene JSON; with `&lite=1`, images without their data |
 | `GET /api/file?id=<fileId>` | One image of the board, cached by the browser for a year |
 | `POST /api/scene` `{"elements", "files"}` | Merges changed elements (what the editor sends) |
