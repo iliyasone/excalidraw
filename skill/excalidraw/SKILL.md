@@ -20,6 +20,9 @@ curl -s -u "$AUTH" "$B/api/boards"                                   # list boar
 curl -s -u "$AUTH" "$B/api/boards" -d '{"name": "Roadmap"}'          # create → {"file": "Roadmap.excalidraw"}
 curl -s -u "$AUTH" "$B/api/scene?file=Roadmap.excalidraw"            # full scene JSON
 curl -s -u "$AUTH" "$B/api/edit?file=Roadmap.excalidraw" -d '{"add": [...], "update": [...], "delete": [...]}'
+curl -s -u "$AUTH" "$B/api/boards/rename" -d '{"file": "Roadmap.excalidraw", "name": "Roadmap 2027"}'
+curl -s -u "$AUTH" "$B/api/boards/archive" -d '{"file": "Roadmap.excalidraw"}'   # restore, delete — то же тело
+curl -s -u "$AUTH" "$B/api/boards?archived=1"                                    # доски в архиве
 ```
 
 Share a board with someone without the password (a secret link to that board only):
@@ -28,6 +31,10 @@ Share a board with someone without the password (a secret link to that board onl
 curl -s -u "$AUTH" "$B/api/shares?file=Roadmap.excalidraw" -d '{"mode": "view"}'   # or "edit" → {"token", …}
 # link: https://excalidraw.sheetlife.app/s/<token>; revoke: curl -X DELETE with the same URL
 ```
+
+Rename and archive move the board together with its decks and PDFs, and send open tabs to the new
+name or back to the board list. Only an archived board can be deleted; it goes to
+`data/backups/deleted/`, not away.
 
 URL-encode `file` in API URLs when the name has spaces or non-Latin letters.
 

@@ -11,6 +11,8 @@ import { generateKeyBetween } from "fractional-indexing";
 
 const root = path.dirname(new URL(import.meta.url).pathname);
 const dataDir = path.join(root, "data");
+const archiveDir = path.join(dataDir, "archive");
+const deletedDir = path.join(dataDir, "backups", "deleted");
 const distDir = path.join(root, "dist");
 const port = Number(process.env.PORT || 3010);
 const hash = (s) => crypto.createHash("sha1").update(s).digest("hex");
@@ -73,7 +75,7 @@ class Scene {
     this.clients = new Set(); // {res, client}
     this.load();
     // Файл поправили руками (не через сервер) — перечитываем и перезагружаем вкладки.
-    setInterval(() => {
+    this.watcher = setInterval(() => {
       if (!fs.existsSync(file) || hash(fs.readFileSync(file)) === this.diskHash) return;
       this.load();
       this.broadcast({ type: "reload" });
@@ -162,6 +164,19 @@ class Scene {
     }
   }
 
+  // Перед переименованием, архивом или удалением: дописываем отложенное сохранение,
+  // перестаём следить за файлом и отпускаем вкладки, сказав им, куда делась доска.
+  close(msg) {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      fs.writeFileSync(this.file, JSON.stringify(this.toJSON()));
+    }
+    clearInterval(this.watcher);
+    this.broadcast(msg);
+    for (const c of this.clients) c.res.end();
+    this.clients.clear();
+  }
+
   broadcast(msg, exceptClient) {
     const data = `data: ${JSON.stringify(msg)}\n\n`;
     for (const c of this.clients) if (!exceptClient || c.client !== exceptClient) c.res.write(data);
@@ -176,6 +191,31 @@ const sceneFor = (f) => {
 
 const fileParam = (u) => path.join(dataDir, path.basename(u.searchParams.get("file") || ""));
 const isScene = (f) => f.endsWith(".excalidraw");
+
+// Доска и всё, что лежит рядом под её именем: колоды (<имя>.deck.json, <имя>.<колода>.deck.json) и PDF.
+const boardFiles = (dir, file) => {
+  const base = file.replace(/\.excalidraw$/, "");
+  return fs.readdirSync(dir).filter((n) => n === file
+    || (n.startsWith(base) && /^(\.[^.]+)?\.(deck\.json|pdf)$/.test(n.slice(base.length))));
+};
+// Переносит доску со спутниками из одной папки в другую, по желанию под новым именем.
+const moveBoard = (fromDir, file, toDir, newFile = file) => {
+  fs.mkdirSync(toDir, { recursive: true });
+  const base = file.replace(/\.excalidraw$/, ""), newBase = newFile.replace(/\.excalidraw$/, "");
+  for (const n of boardFiles(fromDir, file)) fs.renameSync(path.join(fromDir, n), path.join(toDir, newBase + n.slice(base.length)));
+};
+// Открытую доску отпускаем до того, как трогать её файл.
+const releaseScene = (p, msg) => {
+  scenes.get(p)?.close(msg);
+  scenes.delete(p);
+};
+const boardName = (name) => String(name || "").replace(/[\/\\:*?"<>|]/g, " ").trim();
+const listBoards = (dir) => !fs.existsSync(dir) ? [] : fs.readdirSync(dir).filter(isScene).map((file) => {
+  const p = path.join(dir, file);
+  const elements = scenes.has(p) ? [...scenes.get(p).elements.values()] : JSON.parse(fs.readFileSync(p, "utf8")).elements;
+  const live = elements.filter((e) => !e.isDeleted);
+  return { file, slides: live.filter((e) => e.type === "frame").length, elements: live.length, updated: fs.statSync(p).mtimeMs };
+}).sort((a, b) => b.updated - a.updated);
 
 const readBody = (req, limit = Infinity) => new Promise((resolve, reject) => {
   // Склеиваем буферы, а не строки: иначе символ UTF-8 на стыке чанков бьётся в «��».
@@ -336,7 +376,7 @@ async function handle(req, res) {
     if (req.method === "POST") {
       // Новая доска: имя файла = имя доски без символов, недопустимых в пути.
       const { name } = JSON.parse(await readBody(req));
-      const base = String(name || "").replace(/[\/\\:*?"<>|]/g, " ").trim();
+      const base = boardName(name);
       if (!base) return json(res, 400, { error: "нужно имя" });
       const file = base + ".excalidraw";
       const p = path.join(dataDir, file);
@@ -344,13 +384,45 @@ async function handle(req, res) {
       fs.writeFileSync(p, JSON.stringify({ type: "excalidraw", version: 2, source: "excalidraw-self-hosted", elements: [], appState: { viewBackgroundColor: "#ffffff" }, files: {} }));
       return json(res, 201, { file });
     }
-    const boards = fs.readdirSync(dataDir).filter(isScene).map((file) => {
-      const p = path.join(dataDir, file);
-      const elements = scenes.has(p) ? [...scenes.get(p).elements.values()] : JSON.parse(fs.readFileSync(p, "utf8")).elements;
-      const live = elements.filter((e) => !e.isDeleted);
-      return { file, slides: live.filter((e) => e.type === "frame").length, elements: live.length, updated: fs.statSync(p).mtimeMs };
-    });
-    return json(res, 200, boards.sort((a, b) => b.updated - a.updated));
+    return json(res, 200, listBoards(u.searchParams.get("archived") ? archiveDir : dataDir));
+  }
+
+  // Переименовать, убрать в архив, вернуть из архива, удалить: {file, name?}.
+  // Удалить можно только доску из архива; файл уходит в data/backups/deleted, а не стирается.
+  const boardAction = /^\/api\/boards\/(rename|archive|restore|delete)$/.exec(u.pathname);
+  if (boardAction && req.method === "POST") {
+    const body = JSON.parse(await readBody(req));
+    const file = path.basename(String(body.file || ""));
+    if (!isScene(file)) return json(res, 400, { error: "нужна доска" });
+    const action = boardAction[1];
+    const fromDir = action === "restore" || action === "delete" ? archiveDir : dataDir;
+    if (!fs.existsSync(path.join(fromDir, file))) return json(res, 404, { error: "нет такой доски" });
+    if (action === "rename") {
+      const base = boardName(body.name);
+      if (!base) return json(res, 400, { error: "нужно имя" });
+      const newFile = base + ".excalidraw";
+      if (newFile === file) return json(res, 200, { file });
+      if (fs.existsSync(path.join(dataDir, newFile))) return json(res, 409, { error: "такая доска уже есть" });
+      releaseScene(path.join(dataDir, file), { type: "moved", file: newFile });
+      moveBoard(dataDir, file, dataDir, newFile);
+      // Ссылка на доску переезжает вместе с ней.
+      if (shareOf(file)) saveShares(new Map([...shares].map(([t, s]) => [t, s.file === file ? { ...s, file: newFile } : s])));
+      return json(res, 200, { file: newFile });
+    }
+    if (action === "archive") {
+      if (fs.existsSync(path.join(archiveDir, file))) return json(res, 409, { error: "в архиве уже есть доска с таким именем" });
+      releaseScene(path.join(dataDir, file), { type: "gone", reason: "archived" });
+      moveBoard(dataDir, file, archiveDir);
+      return json(res, 200, { file });
+    }
+    if (action === "restore") {
+      if (fs.existsSync(path.join(dataDir, file))) return json(res, 409, { error: "среди досок уже есть доска с таким именем" });
+      moveBoard(archiveDir, file, dataDir);
+      return json(res, 200, { file });
+    }
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    moveBoard(archiveDir, file, deletedDir, `${stamp} ${file}`);
+    return json(res, 200, { file });
   }
 
   if (u.pathname === "/api/scene") {
@@ -392,6 +464,7 @@ async function handle(req, res) {
   }
 
   if (u.pathname === "/api/edit" && req.method === "POST") {
+    if (!isScene(f) || !fs.existsSync(f)) return json(res, 404, { error: "нет такой доски" });
     const scene = sceneFor(f);
     try {
       const body = JSON.parse(await readBody(req));

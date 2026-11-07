@@ -4,6 +4,7 @@ import "@excalidraw/excalidraw/index.css";
 import { fetchScene, fetchFiles } from "./scene.js";
 import { share, boardQuery } from "./access.js";
 import { ShareDialog } from "./share.jsx";
+import { renameBoard, archiveBoard } from "./boards.js";
 
 window.exportToSvg = exportToSvg; // для scripts/pdf.mjs и scripts/shot.mjs
 
@@ -55,6 +56,15 @@ export function Editor({ file, mode = "edit" }) {
       if (msg.type === "share-changed") return location.reload();
       const a = api.current;
       if (!a) return;
+      // Доску переименовали или убрали в архив (в этой или другой вкладке). Гостя по ссылке —
+      // перезагрузкой: ссылка переезжает вместе с доской, а список досок ему закрыт.
+      if (share && (msg.type === "moved" || msg.type === "gone")) return location.reload();
+      if (msg.type === "moved") return location.replace(`/?file=${encodeURIComponent(msg.file)}`);
+      if (msg.type === "gone") {
+        es.close();
+        alert("Доску убрали в архив. Вернуть её можно со страницы «Все доски».");
+        return location.replace("/");
+      }
       if (msg.type === "reload") {
         const d = await load();
         a.updateScene({ elements: d.elements, captureUpdate: CaptureUpdateAction.NEVER });
@@ -116,6 +126,10 @@ export function Editor({ file, mode = "edit" }) {
       ) : (
         <MainMenu>
           <MainMenu.Item onSelect={() => (location.href = "/")}>Все доски</MainMenu.Item>
+          <MainMenu.Item onSelect={() => renameBoard(file).then((f) => f && location.replace(`/?file=${encodeURIComponent(f)}`))}>
+            Переименовать
+          </MainMenu.Item>
+          <MainMenu.Item onSelect={() => archiveBoard(file)}>В архив</MainMenu.Item>
           <MainMenu.Item onSelect={() => setSharing(true)}>Поделиться ссылкой…</MainMenu.Item>
           <MainMenu.Separator />
           <MainMenu.DefaultItems.SaveAsImage />

@@ -72,7 +72,17 @@ export function Presenter({ file }) {
     const watch = (name, fn) => {
       const es = new EventSource(`/api/events?file=${encodeURIComponent(name)}`);
       let t;
-      es.onmessage = () => { clearTimeout(t); t = setTimeout(fn, 800); }; // пачка правок — одна перерисовка
+      es.onmessage = (ev) => {
+        const msg = JSON.parse(ev.data);
+        // Доску переименовали — открываем показ под новым именем, колода переехала вместе с ней.
+        if (msg.type === "moved") {
+          const q = new URLSearchParams(location.search);
+          q.set("file", msg.file);
+          return location.replace(`/present?${q}`);
+        }
+        if (msg.type === "gone") return location.replace("/");
+        clearTimeout(t); t = setTimeout(fn, 800); // пачка правок — одна перерисовка
+      };
       return es;
     };
     const streams = [watch(file, loadScene), watch(deckFile, loadDeck)];
