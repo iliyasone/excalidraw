@@ -24,7 +24,7 @@ about changing the server and the frontend.
 
 On this machine the server runs as the systemd unit `excalidraw` (`deploy/excalidraw.service`,
 linked into `/etc/systemd/system`), listening only on localhost and `docker0`. The public address
-https://excalidraw.sheetlife.app goes through the Coolify Traefik proxy: `deploy/traefik.yaml` is
+https://excalidraw.sheetlife.app (and https://excalidraw.t9chat.com) goes through the Coolify Traefik proxy: `deploy/traefik.yaml` is
 a copy of `/data/coolify/proxy/dynamic/excalidraw.yaml`, the DNS record is in Cloudflare. After changing `src/` or `index.html`: `npm run build`; after
 changing `server.mjs`: `systemctl restart excalidraw`. Open tabs keep working across a restart.
 

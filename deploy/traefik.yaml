@@ -3,12 +3,12 @@ http:
   routers:
     excalidraw-http:
       entryPoints: [http]
-      rule: Host(`excalidraw.sheetlife.app`)
+      rule: Host(`excalidraw.sheetlife.app`) || Host(`excalidraw.t9chat.com`)
       middlewares: [excalidraw-https]
       service: excalidraw
     excalidraw:
       entryPoints: [https]
-      rule: Host(`excalidraw.sheetlife.app`)
+      rule: Host(`excalidraw.sheetlife.app`) || Host(`excalidraw.t9chat.com`)
       service: excalidraw
       tls:
         certResolver: letsencrypt
