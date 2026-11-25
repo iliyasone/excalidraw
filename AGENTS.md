@@ -11,6 +11,10 @@ about changing the server and the frontend.
 - `src/main.jsx`: the editor. Sends only elements whose `version` the server hasn't seen and
   merges incoming ones with `reconcileElements`, so a remote change never overwrites a local
   edit in progress.
+- Password: people sign in on `login.html` (served at any page address until they do) and get a
+  30-day `session` cookie derived from the password; scripts and agents send HTTP Basic instead.
+  Unauthorized API calls get a plain 401 without `WWW-Authenticate`, so the browser never shows
+  its own password dialog.
 - Sharing by link: `/s/<token>` and API calls with `?share=<token>` skip the password but reach only
   the token's board (`shareAllows` in `server.mjs` lists what they may do); tokens are in
   `data/shares.json`. `src/access.js` builds the board part of API URLs for both modes,

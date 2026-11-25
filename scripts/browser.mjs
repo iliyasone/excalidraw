@@ -9,7 +9,9 @@ export const port = process.env.PORT || 3010;
 
 export async function openScene(file) {
   const browser = await chromium.launch();
-  const ctx = await browser.newContext({ httpCredentials: { username: "agent", password: password() } });
+  // Пароль — в каждом запросе: без него сервер отдаёт страницу входа, а не запрос Basic auth.
+  const auth = "Basic " + Buffer.from("agent:" + password()).toString("base64");
+  const ctx = await browser.newContext({ extraHTTPHeaders: { Authorization: auth } });
   const page = await ctx.newPage();
   await page.goto(`http://localhost:${port}/?file=${encodeURIComponent(path.basename(file))}`);
   await page.waitForFunction(() => window.excalidrawAPI, null, { timeout: 60000 });
