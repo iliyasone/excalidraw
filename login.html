@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Вход — Excalidraw</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<script>
+// Тема до первой отрисовки (подробности — src/theme.js).
+(function () {
+  var c = "system";
+  try { c = localStorage.getItem("theme") || c; } catch (e) {}
+  if (c === "system") c = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  document.documentElement.dataset.theme = c;
+})();
+</script>
+<link rel="stylesheet" href="/src/ui.css" />
+<style>
+html, body { margin: 0; min-height: 100%; background: var(--bg-side); color-scheme: light; }
+[data-theme=dark] body { color-scheme: dark; }
+.login { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px; }
+.ui.login .dialog { width: 380px; }
+.ui.login .brand { padding: 0 0 18px; }
+.ui.login .btn { width: 100%; height: 42px; margin-top: 16px; }
+</style>
+</head>
+<body>
+<!-- Сервер отдаёт эту страницу по любому адресу без входа; после входа тот же адрес открывает то, что просили. -->
+<main class="ui login">
+  <form class="dialog" id="form">
+    <div class="brand"><img src="/favicon.svg" alt="" /><span>Excalidraw</span></div>
+    <label class="field" for="password">Пароль</label>
+    <input class="input" id="password" name="password" type="password" autocomplete="current-password" required autofocus />
+    <div class="error" id="error" hidden>Неверный пароль</div>
+    <button class="btn btn-primary" type="submit">Войти</button>
+  </form>
+</main>
+<script>
+form.onsubmit = async (e) => {
+  e.preventDefault();
+  error.hidden = true;
+  const r = await fetch("/api/login", { method: "POST", body: password.value }).catch(() => null);
+  if (r && r.ok) return location.reload();
+  error.textContent = r ? "Неверный пароль" : "Нет связи с сервером";
+  error.hidden = false;
+  password.select();
+};
+</script>
+</body>
+</html>

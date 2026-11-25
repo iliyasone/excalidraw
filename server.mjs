@@ -14,9 +14,13 @@ const dataDir = path.join(root, "data");
 const distDir = path.join(root, "dist");
 const port = Number(process.env.PORT || 3010);
 const hash = (s) => crypto.createHash("sha1").update(s).digest("hex");
-// Порт смотрит в интернет — Basic auth (логин любой, пароль в файле).
+// Порт смотрит в интернет — нужен пароль из файла. Человек вводит его на странице входа и получает
+// cookie на 30 дней (она выводится из пароля: сменили пароль — все входы сброшены);
+// скрипты и агенты шлют Basic auth (логин любой).
 const password = fs.readFileSync(path.join(dataDir, "password"), "utf8").trim();
+const session = "session=" + crypto.createHmac("sha256", password).update("excalidraw session").digest("hex");
 const authorized = (req) => {
+  if ((req.headers.cookie || "").split(/;\s*/).includes(session)) return true;
   const [, b64] = (req.headers.authorization || "").split(" ");
   return Buffer.from(b64 || "", "base64").toString().split(":").slice(1).join(":") === password;
 };
@@ -260,7 +264,7 @@ const json = (res, status, body) => {
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css",
   ".woff2": "font/woff2", ".json": "application/json", ".svg": "image/svg+xml" };
 
-// Файл сборки; index.html не кэшируем, иначе после пересборки браузер держит старый бандл;
+// Файл сборки; страницы (.html) не кэшируем, иначе после пересборки браузер держит старый бандл;
 // файлы из assets/ и fonts/ с хэшем или неизменны — кэш на год.
 const distFile = (pathname) => {
   const p = path.join(distDir, path.normalize(pathname));
@@ -268,7 +272,7 @@ const distFile = (pathname) => {
 };
 const sendDist = (req, res, p, headers = {}) => sendFile(req, res, p, {
   "Content-Type": types[path.extname(p)] || "application/octet-stream",
-  "Cache-Control": p.endsWith("index.html") ? "no-cache" : "private, max-age=31536000, immutable",
+  "Cache-Control": p.endsWith(".html") ? "no-cache" : "private, max-age=31536000, immutable",
   ...headers,
 });
 
@@ -320,11 +324,17 @@ async function handle(req, res) {
     if (!share) return json(res, 403, { error: "ссылка не действует" });
     if (!shareAllows(u, req, share)) return json(res, 403, { error: "по ссылке это недоступно" });
     f = path.join(dataDir, share.file);
+  } else if (u.pathname === "/api/login" && req.method === "POST") {
+    if ((await readBody(req, 4096)) !== password) return json(res, 401, { error: "неверный пароль" });
+    res.writeHead(204, { "Set-Cookie": `${session}; Path=/; Max-Age=${30 * 86400}; HttpOnly; Secure; SameSite=Lax` });
+    return res.end();
   } else if (!authorized(req)) {
     // Без пароля отдаём только сборку (её видит и страница по ссылке): в ней нет данных.
     const p = /^\/(assets|fonts)\//.test(u.pathname) && distFile(u.pathname);
     if (p) return sendDist(req, res, p);
-    return res.writeHead(401, { "WWW-Authenticate": 'Basic realm="excalidraw"' }).end();
+    if (u.pathname.startsWith("/api/")) return json(res, 401, { error: "нужен пароль" });
+    // Страница — форма входа по тому же адресу: после входа она перезагружается в нужную страницу.
+    return sendDist(req, res, path.join(distDir, "login.html"), { "X-Robots-Tag": "noindex" });
   } else f = fileParam(u);
 
   if (u.pathname === "/api/shared") return json(res, 200, { file: share.file, mode: share.mode });
